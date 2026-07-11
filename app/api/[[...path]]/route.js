@@ -382,7 +382,8 @@ async function handler(request, { params }) {
     }
 
     if (route === '/admin/reviews' && method === 'GET') {
-      const items = PRODUCTS.slice(0,10).map((p,i) => ({
+      const list = await listAllProducts()
+      const items = list.slice(0,10).map((p,i) => ({
         id: 'RV' + (100+i), productId: p.id, product: p.name, image: p.images[0],
         name: ['Rahul','Priya','Vikas','Neha','Karan'][i%5]+' K.', rating: (i%2===0)?5:4,
         title: ['Loved it','Great','Awesome','Solid','Perfect'][i%5],
@@ -395,7 +396,7 @@ async function handler(request, { params }) {
     // Seller
     if (route === '/seller/analytics' && method === 'GET') {
       const database = await getDb().catch(() => null)
-      if (!database) return cors(NextResponse.json({ revenue:[], products: PRODUCTS, totals:{revenue:0,orders:0,pendingPayout:0,rating:4.7} }))
+      if (!database) return cors(NextResponse.json({ revenue:[], products: [], totals:{revenue:0,orders:0,pendingPayout:0,rating:4.7} }))
       return cors(NextResponse.json(await computeSellerAnalytics(database)))
     }
     if (route === '/seller/orders' && method === 'GET') {
@@ -424,9 +425,8 @@ async function handler(request, { params }) {
       try {
         reply = await chatCompletion({ messages: [{ role:'system', content: system }, ...(body.messages||[])], model:'gpt-4o-mini', max_tokens: 300 })
       } catch (e) {
-        // Fallback: canned response with product suggestion
         const q = userMsg.toLowerCase()
-        const guess = filterProducts({ q: userMsg }).slice(0,2)
+        const guess = (await filterProductsAsync({ q: userMsg })).slice(0,2)
         if (guess.length) reply = `Here are some great options: ${guess.map(g => `• ${g.name} (₹${g.price.toLocaleString()}) — /product/${g.id}`).join(' ')}. Anything specific you'd like to know?`
         else if (q.includes('return')) reply = 'Yes! We offer 7-day easy returns from delivery. Go to Account › Orders and click Return.'
         else if (q.includes('deliv')) reply = 'Standard delivery is 2–4 business days. Express and same-day options are available at checkout.'
@@ -440,17 +440,17 @@ async function handler(request, { params }) {
     if (route === '/ai/recommendations' && method === 'POST') {
       const body = await request.json()
       const seedIds = [...(body.recentIds||[]), ...(body.cartIds||[]), ...(body.wishlistIds||[])]
-      const seeds = seedIds.map(id => findProduct(id)).filter(Boolean)
+      const all = await listAllProducts()
+      const byId = new Map(all.map(p => [p.id, p]))
+      const seeds = seedIds.map(id => byId.get(id)).filter(Boolean)
       let recIds = []
       let reason = ''
-      // rule-based candidates first
       const cats = new Set(seeds.map(s => s.category))
       const brands = new Set(seeds.map(s => s.brand))
-      let pool = PRODUCTS.filter(p => !seedIds.includes(p.id) && (cats.has(p.category) || brands.has(p.brand)))
+      let pool = all.filter(p => !seedIds.includes(p.id) && (cats.has(p.category) || brands.has(p.brand)))
       pool.sort((a,b) => (b.rating*b.ratingCount) - (a.rating*a.ratingCount))
-      if (!pool.length) pool = filterProducts({ sort:'popular' })
+      if (!pool.length) pool = (await filterProductsAsync({ sort:'popular' }))
       const candidates = pool.slice(0, 12)
-      // Try LLM to pick top 6 and craft reason
       try {
         const list = candidates.map(p => `${p.id}: ${p.name} (${p.brand}, ${p.subcategory}, ₹${p.price})`).join('\n')
         const seedList = seeds.map(p => `${p.id}: ${p.name} (${p.brand})`).join('\n') || 'No specific history.'
@@ -459,7 +459,7 @@ async function handler(request, { params }) {
         const m = raw.match(/\{[\s\S]*\}/); const parsed = m ? JSON.parse(m[0]) : null
         if (parsed?.ids?.length) { recIds = parsed.ids; reason = parsed.reason || '' }
       } catch {}
-      const items = (recIds.length ? recIds : candidates.slice(0,6).map(p=>p.id)).map(id => findProduct(id)).filter(Boolean).slice(0,6)
+      const items = (recIds.length ? recIds : candidates.slice(0,6).map(p=>p.id)).map(id => byId.get(id)).filter(Boolean).slice(0,6)
       return cors(NextResponse.json({ items, reason: reason || 'Curated for your interests.' }))
     }
 
