@@ -84,6 +84,22 @@ async function handler(request, { params }) {
     if (route === '/categories' && method === 'GET') return cors(NextResponse.json({ items: CATEGORIES }))
     if (route === '/brands' && method === 'GET') return cors(NextResponse.json({ items: BRANDS }))
 
+    // Batched homepage sections in a single response (huge perf win)
+    if (route === '/home' && method === 'GET') {
+      const pick = (opts, n=12) => filterProducts(opts).slice(0, n)
+      const payload = {
+        featured: pick({ tag:'featured', sort:'popular' }),
+        bestsellers: pick({ tag:'bestseller', sort:'popular' }),
+        trending: pick({ tag:'trending', sort:'popular' }),
+        newArrivals: pick({ tag:'new', sort:'newest' }),
+        topRated: pick({ tag:'toprated', sort:'rating' }),
+        deals: pick({ tag:'deal', sort:'discount' }),
+      }
+      const res = NextResponse.json(payload)
+      res.headers.set('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=300')
+      return cors(res)
+    }
+
     if (route === '/products' && method === 'GET') {
       const brand = qs.brand ? String(qs.brand).split(',') : []
       const limit = Math.min(parseInt(qs.limit||'0') || 0, 200)

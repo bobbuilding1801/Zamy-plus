@@ -1,7 +1,10 @@
 import Header from './Header'
 import Footer from './Footer'
-import BackToTop from './BackToTop'
-import ChatWidget from './ChatWidget'
+import dynamic from 'next/dynamic'
+
+// Lazy-load non-critical widgets so first paint is fast
+const BackToTop = dynamic(() => import('./BackToTop'), { ssr: false })
+const ChatWidget = dynamic(() => import('./ChatWidget'), { ssr: false })
 
 export default function SiteChrome({ children, hideChrome=false }) {
   return (

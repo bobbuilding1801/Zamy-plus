@@ -8,16 +8,22 @@ import { useShop, formatINR } from '@/lib/store'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 
+// Reduce image size for card thumbnails
+function thumb(url, w=420) {
+  if (!url) return url
+  return url.replace(/([?&])w=\d+/, `$1w=${w}`)
+}
+
 export default function ProductCard({ p, className='' }) {
   const { addToCart, toggleWishlist, wishlist, toggleCompare, compare } = useShop()
   const inWish = wishlist.includes(p.id)
   const inCmp = compare.includes(p.id)
   return (
     <Card className={cn('group relative overflow-hidden rounded-2xl border-border/60 hover:border-primary/40 hover:shadow-premium transition-all duration-300 bg-card', className)}>
-      <Link href={`/product/${p.id}`} className="block">
+      <Link href={`/product/${p.id}`} prefetch={false} className="block">
         <div className="zoom-wrap relative aspect-square bg-secondary/50">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={p.images[0]} alt={p.name} className="h-full w-full object-cover" loading="lazy" />
+          <img src={thumb(p.images[0], 420)} alt={p.name} className="h-full w-full object-cover" loading="lazy" decoding="async" />
           {p.discount > 0 && (
             <span className="absolute left-3 top-3 rounded-full bg-primary px-2.5 py-1 text-[11px] font-bold text-primary-foreground shadow">-{p.discount}%</span>
           )}
@@ -36,7 +42,7 @@ export default function ProductCard({ p, className='' }) {
       </Link>
       <div className="p-3.5 space-y-1.5">
         <div className="text-[11px] uppercase tracking-wider text-muted-foreground">{p.brand}</div>
-        <Link href={`/product/${p.id}`} className="line-clamp-2 text-sm font-semibold leading-snug hover:text-primary transition min-h-[2.5rem]">{p.name}</Link>
+        <Link href={`/product/${p.id}`} prefetch={false} className="line-clamp-2 text-sm font-semibold leading-snug hover:text-primary transition min-h-[2.5rem]">{p.name}</Link>
         <StarRating value={p.rating} count={p.ratingCount} />
         <div className="flex items-baseline gap-2 pt-1">
           <span className="text-lg font-extrabold">{formatINR(p.price)}</span>
