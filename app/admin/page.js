@@ -11,6 +11,7 @@ import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { useAuthGate, getAuth } from '@/lib/auth'
 import AuthBar from '@/components/site/AuthBar'
+import ProductManager from '@/components/admin/ProductManager'
 
 const NAV = [
   { k:'dashboard', t:'Dashboard', i:LayoutDashboard },
@@ -168,27 +169,7 @@ function Inner() {
       </div>
     )
     if (tab === 'products') return (
-      <div>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-xl font-black">Products ({products.length})</h2>
-          <Button className="rounded-full">+ Add Product</Button>
-        </div>
-        <div className="rounded-2xl border overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-secondary/50 text-xs uppercase"><tr><th className="p-3 text-left">Product</th><th className="p-3">Brand</th><th className="p-3">Category</th><th className="p-3 text-right">Price</th><th className="p-3">Stock</th><th className="p-3">Rating</th></tr></thead>
-            <tbody>{products.map(p => (
-              <tr key={p.id} className="border-t hover:bg-secondary/30">
-                <td className="p-3"><div className="flex items-center gap-2"><img src={p.images[0]} className="h-9 w-9 rounded object-cover" alt="" /><span className="line-clamp-1 max-w-[280px]">{p.name}</span></div></td>
-                <td className="p-3">{p.brand}</td>
-                <td className="p-3 capitalize">{p.subcategory}</td>
-                <td className="p-3 text-right font-bold">{formatINR(p.price)}</td>
-                <td className="p-3"><Badge variant={p.stock>10?'default':p.stock>0?'secondary':'destructive'}>{p.stock}</Badge></td>
-                <td className="p-3">{p.rating.toFixed(1)}</td>
-              </tr>
-            ))}</tbody>
-          </table>
-        </div>
-      </div>
+      <ProductManager token={gate.user?.token} onChanged={() => setProducts(prev => prev)} />
     )
     if (tab === 'customers') return (
       <div>

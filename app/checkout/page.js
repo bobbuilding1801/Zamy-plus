@@ -65,6 +65,10 @@ function CheckoutInner() {
     const order = { total, items: active.map(c => ({ ...c, product: products[c.id] })), address: addr, shipping: ship, payment: pay, id: '' }
     const res = await fetch('/api/orders', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(order) })
     const data = await res.json()
+    if (!res.ok || !data.ok) {
+      toast.error(data.error || 'Could not place order. Please try again.')
+      return
+    }
     placeOrder({ ...order, id: data.order.id, total })
     clearCart()
     toast.success('Order placed successfully!')

@@ -2,7 +2,11 @@ import { NextResponse } from 'next/server'
 import { v4 as uuidv4 } from 'uuid'
 import { MongoClient } from 'mongodb'
 import crypto from 'crypto'
-import { PRODUCTS, CATEGORIES, BRANDS, findProduct, filterProducts, suggestProducts, similarProducts } from '@/lib/data'
+import { CATEGORIES, BRANDS, HERO_SLIDES, PROMOS } from '@/lib/data'
+import {
+  listAllProducts, findProductAsync, filterProductsAsync, suggestProductsAsync, similarProductsAsync,
+  createProduct, updateProduct, deleteProduct, decrementStock,
+} from '@/lib/products'
 import { chatCompletion } from '@/lib/llm'
 
 export const runtime = 'nodejs'
@@ -139,9 +143,10 @@ async function computeSellerAnalytics(db) {
     totalRevenue += o.total || 0
     totalOrders += 1
   }
+  const products = await listAllProducts()
   return {
     revenue: Array.from(rev.values()),
-    products: PRODUCTS,
+    products,
     totals: {
       revenue: totalRevenue,
       orders: totalOrders,
@@ -187,16 +192,16 @@ async function handler(request, { params }) {
 
     // Batched homepage sections in a single response (huge perf win)
     if (route === '/home' && method === 'GET') {
-      const pick = (opts, n=12) => filterProducts(opts).slice(0, n)
-      const payload = {
-        featured: pick({ tag:'featured', sort:'popular' }),
-        bestsellers: pick({ tag:'bestseller', sort:'popular' }),
-        trending: pick({ tag:'trending', sort:'popular' }),
-        newArrivals: pick({ tag:'new', sort:'newest' }),
-        topRated: pick({ tag:'toprated', sort:'rating' }),
-        deals: pick({ tag:'deal', sort:'discount' }),
-      }
-      const res = NextResponse.json(payload)
+      const pick = async (opts, n=12) => (await filterProductsAsync(opts)).slice(0, n)
+      const [featured, bestsellers, trending, newArrivals, topRated, deals] = await Promise.all([
+        pick({ tag:'featured', sort:'popular' }),
+        pick({ tag:'bestseller', sort:'popular' }),
+        pick({ tag:'trending', sort:'popular' }),
+        pick({ tag:'new', sort:'newest' }),
+        pick({ tag:'toprated', sort:'rating' }),
+        pick({ tag:'deal', sort:'discount' }),
+      ])
+      const res = NextResponse.json({ featured, bestsellers, trending, newArrivals, topRated, deals })
       res.headers.set('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=300')
       return cors(res)
     }
@@ -205,7 +210,7 @@ async function handler(request, { params }) {
       const brand = qs.brand ? String(qs.brand).split(',') : []
       const limit = Math.min(parseInt(qs.limit||'0') || 0, 200)
       const skip = parseInt(qs.skip||'0') || 0
-      const items = filterProducts({
+      const items = await filterProductsAsync({
         q: qs.q || '', category: qs.category || '', subcategory: qs.subcategory || '',
         brand, minPrice: parseFloat(qs.minPrice) || 0, maxPrice: qs.maxPrice ? parseFloat(qs.maxPrice) : Infinity,
         rating: parseFloat(qs.rating) || 0, inStock: qs.inStock === 'true',
@@ -215,25 +220,26 @@ async function handler(request, { params }) {
       const sliced = limit ? items.slice(skip, skip + limit) : items
       return cors(NextResponse.json({ items: sliced, total }))
     }
-    if (route === '/products/suggest' && method === 'GET') return cors(NextResponse.json({ items: suggestProducts(qs.q || '', 8) }))
+    if (route === '/products/suggest' && method === 'GET') return cors(NextResponse.json({ items: await suggestProductsAsync(qs.q || '', 8) }))
     if (route === '/products/by-ids' && method === 'GET') {
       const ids = (qs.ids || '').split(',').filter(Boolean)
-      const map = new Map(PRODUCTS.map(p => [p.id, p]))
+      const all = await listAllProducts()
+      const map = new Map(all.map(p => [p.id, p]))
       const items = ids.map(id => map.get(id)).filter(Boolean)
       return cors(NextResponse.json({ items }))
     }
     if (route.startsWith('/products/') && route.endsWith('/similar') && method === 'GET') {
       const id = route.split('/')[2]
-      return cors(NextResponse.json({ items: similarProducts(findProduct(id), 8) }))
+      return cors(NextResponse.json({ items: await similarProductsAsync(await findProductAsync(id), 8) }))
     }
     if (route.startsWith('/products/') && route.endsWith('/fbt') && method === 'GET') {
-      const id = route.split('/')[2]; const p = findProduct(id)
+      const id = route.split('/')[2]; const p = await findProductAsync(id)
       if (!p) return cors(NextResponse.json({ items: [] }))
-      const items = filterProducts({ category: p.category }).filter(x => x.id !== id).slice(0, 3)
+      const items = (await filterProductsAsync({ category: p.category })).filter(x => x.id !== id).slice(0, 3)
       return cors(NextResponse.json({ items }))
     }
     if (route.startsWith('/products/') && route.endsWith('/reviews') && method === 'GET') {
-      const id = route.split('/')[2]; const p = findProduct(id)
+      const id = route.split('/')[2]; const p = await findProductAsync(id)
       if (!p) return cors(NextResponse.json({ items: [] }))
       const names = ['Aarav S.','Priya M.','Rahul K.','Neha J.','Karan V.','Sanya D.','Vikas P.','Ishita R.']
       const titles = ['Excellent product!','Great value','Works as expected','Loved it','Worth every rupee','Highly recommend','Impressive quality','Solid build']
@@ -259,17 +265,27 @@ async function handler(request, { params }) {
       ]}))
     }
     if (route.startsWith('/products/') && method === 'GET') {
-      const id = route.split('/')[2]; const p = findProduct(id)
+      const id = route.split('/')[2]; const p = await findProductAsync(id)
       if (!p) return cors(NextResponse.json({ error: 'Not found' }, { status: 404 }))
       return cors(NextResponse.json(p))
     }
 
-    // Orders
+    // Orders (with stock decrement)
     if (route === '/orders' && method === 'POST') {
       const body = await request.json()
+      // Decrement stock atomically per item. Fail order if insufficient.
+      const wantedItems = (body.items || []).map(i => ({ id: i.id, qty: i.qty || 1 }))
+      const stockCheck = []
+      for (const it of wantedItems) {
+        const p = await findProductAsync(it.id)
+        if (!p) return cors(NextResponse.json({ ok:false, error: `Product ${it.id} not found` }, { status: 400 }))
+        if ((p.stock || 0) < it.qty) return cors(NextResponse.json({ ok:false, error: `Only ${p.stock} left of "${p.name}"` }, { status: 409 }))
+        stockCheck.push(p)
+      }
+      const decremented = await decrementStock(wantedItems)
       const order = { id: uuidv4().slice(0,8).toUpperCase(), createdAt: Date.now(), status: 'confirmed', ...body }
       try { const database = await getDb(); await database.collection('orders').insertOne({ ...order }) } catch {}
-      return cors(NextResponse.json({ ok: true, order }))
+      return cors(NextResponse.json({ ok: true, order, stock: decremented }))
     }
 
     // Order tracking
@@ -342,6 +358,29 @@ async function handler(request, { params }) {
         { code:'FREESHIP', discount:'Free shipping', min:0, uses:2210, cap:'–' },
       ]}))
     }
+    // Admin product management
+    if (route === '/admin/products' && method === 'GET') {
+      const items = await listAllProducts()
+      return cors(NextResponse.json({ items }))
+    }
+    if (route === '/admin/products' && method === 'POST') {
+      const body = await request.json()
+      const created = await createProduct(body)
+      return cors(NextResponse.json({ ok: true, product: created }))
+    }
+    if (route.startsWith('/admin/products/') && method === 'PUT') {
+      const id = route.split('/')[3]
+      const body = await request.json()
+      const updated = await updateProduct(id, body)
+      if (!updated) return cors(NextResponse.json({ ok: false, error: 'Not found' }, { status: 404 }))
+      return cors(NextResponse.json({ ok: true, product: updated }))
+    }
+    if (route.startsWith('/admin/products/') && method === 'DELETE') {
+      const id = route.split('/')[3]
+      const ok = await deleteProduct(id)
+      return cors(NextResponse.json({ ok }))
+    }
+
     if (route === '/admin/reviews' && method === 'GET') {
       const items = PRODUCTS.slice(0,10).map((p,i) => ({
         id: 'RV' + (100+i), productId: p.id, product: p.name, image: p.images[0],
