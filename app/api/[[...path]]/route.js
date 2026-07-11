@@ -67,37 +67,88 @@ function trackingFor(orderId) {
   return { orderId, courier: 'ZAMY Express', awb: 'ZMY' + orderId.slice(-6), stages }
 }
 
-// Fake admin analytics (deterministic)
-function adminAnalytics() {
+// Compute analytics from real orders in Mongo
+async function computeAdminAnalytics(db) {
   const days = 30
   const now = Date.now()
-  const revenue = Array.from({length:days}).map((_,i) => ({
-    date: new Date(now - (days-i-1)*86400000).toISOString().slice(0,10),
-    revenue: Math.round(60000 + Math.sin(i/3)*15000 + Math.random()*40000),
-    orders: Math.round(30 + Math.sin(i/2)*10 + Math.random()*20),
-  }))
-  const catShare = CATEGORIES.map(c => ({ name: c.name, value: filterProducts({ category: c.slug }).length * 3 + Math.round(Math.random()*20) }))
-  const topProducts = filterProducts({ sort:'popular' }).slice(0,5).map(p => ({ id:p.id, name:p.name, sold: Math.round(200 + Math.random()*1200), revenue: p.price * (200 + Math.round(Math.random()*1000)) }))
-  const totals = {
-    revenue: revenue.reduce((s,d)=>s+d.revenue,0),
-    orders: revenue.reduce((s,d)=>s+d.orders,0),
-    customers: 12480 + Math.floor(Math.random()*100),
-    aov: Math.round(revenue.reduce((s,d)=>s+d.revenue,0) / revenue.reduce((s,d)=>s+d.orders,0)),
+  const start = now - days * 86400000
+  const orders = await db.collection('orders').find({ createdAt: { $gte: start } }).toArray().catch(() => [])
+  // Build day-by-day revenue map
+  const rev = new Map()
+  for (let i = 0; i < days; i++) {
+    const d = new Date(now - (days - i - 1) * 86400000).toISOString().slice(0, 10)
+    rev.set(d, { date: d, revenue: 0, orders: 0 })
   }
-  return { revenue, catShare, topProducts, totals }
+  let totalRevenue = 0, totalOrders = 0
+  const catMap = new Map()
+  const prodMap = new Map()
+  const customerSet = new Set()
+  for (const o of orders) {
+    const d = new Date(o.createdAt || Date.now()).toISOString().slice(0, 10)
+    const row = rev.get(d)
+    if (row) { row.revenue += o.total || 0; row.orders += 1 }
+    totalRevenue += o.total || 0
+    totalOrders += 1
+    if (o.address?.email) customerSet.add(o.address.email.toLowerCase())
+    for (const it of (o.items || [])) {
+      const cat = it.product?.category || 'other'
+      catMap.set(cat, (catMap.get(cat) || 0) + (it.product?.price || 0) * (it.qty || 1))
+      const pid = it.product?.id
+      if (pid) {
+        const prev = prodMap.get(pid) || { id: pid, name: it.product?.name, sold: 0, revenue: 0 }
+        prev.sold += it.qty || 1
+        prev.revenue += (it.product?.price || 0) * (it.qty || 1)
+        prodMap.set(pid, prev)
+      }
+    }
+  }
+  const catShare = Array.from(catMap.entries()).map(([slug, value]) => {
+    const c = CATEGORIES.find(x => x.slug === slug)
+    return { name: c?.name || slug, value: Math.round(value) }
+  })
+  const topProducts = Array.from(prodMap.values()).sort((a, b) => b.sold - a.sold).slice(0, 5)
+  const revenue = Array.from(rev.values())
+  return {
+    revenue,
+    catShare: catShare.length ? catShare : CATEGORIES.slice(0, 4).map(c => ({ name: c.name, value: 0 })),
+    topProducts,
+    totals: {
+      revenue: totalRevenue,
+      orders: totalOrders,
+      customers: customerSet.size,
+      aov: totalOrders ? Math.round(totalRevenue / totalOrders) : 0,
+    },
+  }
 }
 
-function sellerAnalytics() {
+async function computeSellerAnalytics(db) {
   const days = 14
   const now = Date.now()
-  const revenue = Array.from({length:days}).map((_,i) => ({
-    date: new Date(now - (days-i-1)*86400000).toISOString().slice(0,10),
-    revenue: Math.round(12000 + Math.sin(i/2)*4000 + Math.random()*8000),
-    orders: Math.round(4 + Math.sin(i)*2 + Math.random()*4),
-  }))
-  const products = PRODUCTS.filter(p => p.brand === 'ZAMY').slice(0,8)
-  const totals = { revenue: revenue.reduce((s,d)=>s+d.revenue,0), orders: revenue.reduce((s,d)=>s+d.orders,0), pendingPayout: 45280, rating: 4.7 }
-  return { revenue, products, totals }
+  const start = now - days * 86400000
+  const orders = await db.collection('orders').find({ createdAt: { $gte: start } }).toArray().catch(() => [])
+  const rev = new Map()
+  for (let i = 0; i < days; i++) {
+    const d = new Date(now - (days - i - 1) * 86400000).toISOString().slice(0, 10)
+    rev.set(d, { date: d, revenue: 0, orders: 0 })
+  }
+  let totalRevenue = 0, totalOrders = 0
+  for (const o of orders) {
+    const d = new Date(o.createdAt || Date.now()).toISOString().slice(0, 10)
+    const row = rev.get(d)
+    if (row) { row.revenue += o.total || 0; row.orders += 1 }
+    totalRevenue += o.total || 0
+    totalOrders += 1
+  }
+  return {
+    revenue: Array.from(rev.values()),
+    products: PRODUCTS,
+    totals: {
+      revenue: totalRevenue,
+      orders: totalOrders,
+      pendingPayout: Math.round(totalRevenue * 0.85),
+      rating: 4.7,
+    },
+  }
 }
 
 async function handler(request, { params }) {
@@ -234,25 +285,54 @@ async function handler(request, { params }) {
     if (route.startsWith('/seller/')) {
       if (!requireAuth(request, 'seller')) return cors(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
     }
-    if (route === '/admin/analytics' && method === 'GET') return cors(NextResponse.json(adminAnalytics()))
+    if (route === '/admin/analytics' && method === 'GET') {
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ revenue:[], catShare:[], topProducts:[], totals:{revenue:0,orders:0,customers:0,aov:0} }))
+      return cors(NextResponse.json(await computeAdminAnalytics(database)))
+    }
     if (route === '/admin/orders' && method === 'GET') {
-      // Fake orders derived from products
-      const items = filterProducts({ sort:'popular' }).slice(0,25).map((p,i) => ({
-        id: 'ORD' + String(10001 + i),
-        customer: ['Rahul K.','Priya S.','Vikas P.','Neha J.','Karan D.','Anita R.'][(i)%6],
-        email: 'buyer'+i+'@zamy.market',
-        productId: p.id, product: p.name, image: p.images[0],
-        total: p.price, status: ['confirmed','shipped','delivered','cancelled'][i%4], createdAt: Date.now() - i*7200000,
-      }))
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ items: [] }))
+      const raw = await database.collection('orders').find({}).sort({ createdAt: -1 }).limit(200).toArray().catch(() => [])
+      const items = raw.map(o => {
+        const first = (o.items || [])[0]
+        return {
+          id: o.id,
+          customer: o.address?.name || 'Guest',
+          email: o.address?.email || '—',
+          productId: first?.product?.id || '',
+          product: first?.product?.name || (o.items?.length ? `${o.items.length} items` : 'Order'),
+          image: first?.product?.images?.[0] || '',
+          total: o.total || 0,
+          status: o.status || 'confirmed',
+          createdAt: o.createdAt || Date.now(),
+          itemCount: o.items?.length || 0,
+        }
+      })
       return cors(NextResponse.json({ items }))
     }
     if (route === '/admin/customers' && method === 'GET') {
-      const items = Array.from({length:20}).map((_,i) => ({
-        id: 'CUS' + String(2001+i),
-        name: ['Rahul K.','Priya S.','Vikas P.','Neha J.','Karan D.','Anita R.','Ishita M.','Amit K.','Sneha T.','Rohan V.'][i%10] + ' ' + String.fromCharCode(65+i),
-        email: 'user'+i+'@zamy.market', orders: Math.round(2+Math.random()*20), spend: Math.round(4000+Math.random()*200000), joined: new Date(Date.now() - i*15*86400000).toISOString().slice(0,10),
-      }))
-      return cors(NextResponse.json({ items }))
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ items: [] }))
+      const raw = await database.collection('orders').find({}).toArray().catch(() => [])
+      const map = new Map()
+      for (const o of raw) {
+        const email = (o.address?.email || '').toLowerCase().trim()
+        if (!email) continue
+        const prev = map.get(email) || {
+          id: 'CUS-' + email.split('@')[0].slice(0, 8).toUpperCase(),
+          name: o.address?.name || '—',
+          email,
+          orders: 0,
+          spend: 0,
+          joined: new Date(o.createdAt || Date.now()).toISOString().slice(0, 10),
+        }
+        prev.orders += 1
+        prev.spend += o.total || 0
+        if ((o.createdAt || 0) < new Date(prev.joined).getTime()) prev.joined = new Date(o.createdAt).toISOString().slice(0, 10)
+        map.set(email, prev)
+      }
+      return cors(NextResponse.json({ items: Array.from(map.values()).sort((a, b) => b.spend - a.spend) }))
     }
     if (route === '/admin/coupons' && method === 'GET') {
       return cors(NextResponse.json({ items: [
@@ -274,12 +354,24 @@ async function handler(request, { params }) {
     }
 
     // Seller
-    if (route === '/seller/analytics' && method === 'GET') return cors(NextResponse.json(sellerAnalytics()))
+    if (route === '/seller/analytics' && method === 'GET') {
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ revenue:[], products: PRODUCTS, totals:{revenue:0,orders:0,pendingPayout:0,rating:4.7} }))
+      return cors(NextResponse.json(await computeSellerAnalytics(database)))
+    }
     if (route === '/seller/orders' && method === 'GET') {
-      const items = PRODUCTS.filter(p => p.brand==='ZAMY').slice(0,10).map((p,i) => ({
-        id: 'SO' + String(3001+i), product: p.name, image: p.images[0], qty: 1+i%4,
-        total: p.price*(1+i%4), status: ['pending','shipped','delivered'][i%3], customer: 'Buyer '+(i+1)
-      }))
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ items: [] }))
+      const raw = await database.collection('orders').find({}).sort({ createdAt: -1 }).limit(100).toArray().catch(() => [])
+      const items = raw.flatMap(o => (o.items || []).map((it, idx) => ({
+        id: `${o.id}-${idx+1}`,
+        product: it.product?.name || 'Item',
+        image: it.product?.images?.[0] || '',
+        qty: it.qty || 1,
+        total: (it.product?.price || 0) * (it.qty || 1),
+        status: o.status || 'confirmed',
+        customer: o.address?.name || 'Guest',
+      })))
       return cors(NextResponse.json({ items }))
     }
 
