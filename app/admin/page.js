@@ -1,0 +1,282 @@
+'use client'
+import { Suspense, useEffect, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
+import Link from 'next/link'
+import { LayoutDashboard, ShoppingBag, Boxes, Users, Ticket, Star, Settings, Tag, LineChart, Truck, Layers, Mail, Image as ImageIcon, LogOut, TrendingUp, DollarSign, Package, UsersRound } from 'lucide-react'
+import { AreaChart, Area, PieChart, Pie, Cell, ResponsiveContainer, XAxis, YAxis, Tooltip, BarChart, Bar, CartesianGrid, Legend } from 'recharts'
+import { formatINR } from '@/lib/store'
+import Logo from '@/components/site/Logo'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Badge } from '@/components/ui/badge'
+
+const NAV = [
+  { k:'dashboard', t:'Dashboard', i:LayoutDashboard },
+  { k:'orders', t:'Orders', i:ShoppingBag },
+  { k:'products', t:'Products', i:Boxes },
+  { k:'categories', t:'Categories', i:Layers },
+  { k:'customers', t:'Customers', i:Users },
+  { k:'inventory', t:'Inventory', i:Package },
+  { k:'coupons', t:'Coupons', i:Ticket },
+  { k:'reviews', t:'Reviews', i:Star },
+  { k:'returns', t:'Returns & Refunds', i:Truck },
+  { k:'shipping', t:'Shipping & Taxes', i:Truck },
+  { k:'reports', t:'Reports', i:LineChart },
+  { k:'users', t:'User Management', i:UsersRound },
+  { k:'banners', t:'Banner CMS', i:ImageIcon },
+  { k:'cms', t:'CMS Pages', i:Layers },
+  { k:'emails', t:'Email Templates', i:Mail },
+  { k:'settings', t:'Settings', i:Settings },
+]
+
+const YELLOW='#FFD400', BLACK='#111', GREY='#e5e7eb'
+const PIE_COLORS = ['#FFD400','#111','#4b5563','#9ca3af','#f59e0b','#fde68a','#374151','#6b7280']
+
+function Inner() {
+  const sp = useSearchParams()
+  const tab = sp.get('tab') || 'dashboard'
+  const [analytics, setAnalytics] = useState(null)
+  const [orders, setOrders] = useState([])
+  const [customers, setCustomers] = useState([])
+  const [coupons, setCoupons] = useState([])
+  const [reviews, setReviews] = useState([])
+  const [products, setProducts] = useState([])
+
+  useEffect(() => {
+    fetch('/api/admin/analytics').then(r=>r.json()).then(setAnalytics)
+    fetch('/api/admin/orders').then(r=>r.json()).then(d => setOrders(d.items||[]))
+    fetch('/api/admin/customers').then(r=>r.json()).then(d => setCustomers(d.items||[]))
+    fetch('/api/admin/coupons').then(r=>r.json()).then(d => setCoupons(d.items||[]))
+    fetch('/api/admin/reviews').then(r=>r.json()).then(d => setReviews(d.items||[]))
+    fetch('/api/products?limit=30').then(r=>r.json()).then(d => setProducts(d.items||[]))
+  }, [])
+
+  const KPI = ({ label, value, sub, Icon, tone='primary' }) => (
+    <div className="rounded-2xl border p-5 bg-card">
+      <div className="flex items-center justify-between">
+        <div>
+          <div className="text-xs text-muted-foreground uppercase font-bold">{label}</div>
+          <div className="text-2xl md:text-3xl font-black mt-1">{value}</div>
+          {sub && <div className="text-xs text-green-600 font-semibold mt-1">{sub}</div>}
+        </div>
+        <div className={`h-11 w-11 grid place-items-center rounded-full ${tone==='primary' ? 'bg-primary/15 text-primary' : 'bg-secondary'}`}><Icon size={20} /></div>
+      </div>
+    </div>
+  )
+
+  const Content = () => {
+    if (tab === 'dashboard' && analytics) return (
+      <div className="space-y-6">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <KPI label="Revenue (30d)" value={formatINR(analytics.totals.revenue)} sub="+18.2% vs prev" Icon={DollarSign} />
+          <KPI label="Orders" value={analytics.totals.orders.toLocaleString()} sub="+12.4%" Icon={ShoppingBag} />
+          <KPI label="Customers" value={analytics.totals.customers.toLocaleString()} sub="+3.6%" Icon={Users} />
+          <KPI label="Avg Order Value" value={formatINR(analytics.totals.aov)} sub="+5.1%" Icon={TrendingUp} />
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <div className="lg:col-span-2 rounded-2xl border p-5 bg-card">
+            <div className="flex items-center justify-between mb-2"><div className="font-bold">Revenue Trend</div><Badge variant="outline">Last 30 days</Badge></div>
+            <div className="h-72">
+              <ResponsiveContainer>
+                <AreaChart data={analytics.revenue}>
+                  <defs>
+                    <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={YELLOW} stopOpacity={0.8}/><stop offset="100%" stopColor={YELLOW} stopOpacity={0.05}/></linearGradient>
+                  </defs>
+                  <CartesianGrid stroke={GREY} vertical={false} />
+                  <XAxis dataKey="date" tick={{fontSize:10}} tickFormatter={(v)=>v.slice(5)} />
+                  <YAxis tick={{fontSize:10}} tickFormatter={(v)=>'₹'+(v/1000).toFixed(0)+'k'} />
+                  <Tooltip formatter={(v)=>['₹'+v.toLocaleString(),'Revenue']} />
+                  <Area type="monotone" dataKey="revenue" stroke={BLACK} strokeWidth={2} fill="url(#g1)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+          <div className="rounded-2xl border p-5 bg-card">
+            <div className="font-bold mb-2">Sales by Category</div>
+            <div className="h-72">
+              <ResponsiveContainer>
+                <PieChart>
+                  <Pie data={analytics.catShare} dataKey="value" nameKey="name" innerRadius={50} outerRadius={90}>
+                    {analytics.catShare.map((_,i) => <Cell key={i} fill={PIE_COLORS[i%PIE_COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip />
+                  <Legend wrapperStyle={{fontSize:10}} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div className="rounded-2xl border p-5 bg-card">
+            <div className="font-bold mb-2">Top Products</div>
+            <div className="h-64">
+              <ResponsiveContainer>
+                <BarChart data={analytics.topProducts} layout="vertical">
+                  <XAxis type="number" hide />
+                  <YAxis type="category" dataKey="name" width={150} tick={{fontSize:10}} />
+                  <Tooltip formatter={(v)=>[v.toLocaleString(),'Sold']} />
+                  <Bar dataKey="sold" fill={YELLOW} radius={[0,6,6,0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+          <div className="rounded-2xl border p-5 bg-card">
+            <div className="font-bold mb-3">Recent Orders</div>
+            <div className="space-y-2">{orders.slice(0,6).map(o => (
+              <div key={o.id} className="flex items-center gap-3 text-sm border-b last:border-0 pb-2">
+                <img src={o.image} className="h-9 w-9 rounded object-cover" alt="" />
+                <div className="flex-1 min-w-0"><div className="font-semibold truncate">{o.product}</div><div className="text-xs text-muted-foreground">{o.customer}</div></div>
+                <div className="font-bold">{formatINR(o.total)}</div>
+                <Badge variant={o.status==='delivered'?'default':o.status==='cancelled'?'destructive':'secondary'} className="capitalize">{o.status}</Badge>
+              </div>
+            ))}</div>
+          </div>
+        </div>
+      </div>
+    )
+    if (tab === 'orders') return (
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <h2 className="text-xl font-black">Orders</h2>
+          <Input placeholder="Search orders…" className="max-w-xs" />
+        </div>
+        <div className="rounded-2xl border overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-secondary/50 text-xs uppercase">
+              <tr><th className="p-3 text-left">Order</th><th className="p-3 text-left">Customer</th><th className="p-3 text-left">Product</th><th className="p-3 text-right">Total</th><th className="p-3">Status</th><th className="p-3">Action</th></tr>
+            </thead>
+            <tbody>{orders.map(o => (
+              <tr key={o.id} className="border-t hover:bg-secondary/30">
+                <td className="p-3 font-bold">#{o.id}</td>
+                <td className="p-3">{o.customer}<div className="text-xs text-muted-foreground">{o.email}</div></td>
+                <td className="p-3"><div className="flex items-center gap-2"><img src={o.image} className="h-8 w-8 rounded object-cover" alt="" /><span className="line-clamp-1 max-w-[240px]">{o.product}</span></div></td>
+                <td className="p-3 text-right font-bold">{formatINR(o.total)}</td>
+                <td className="p-3"><Badge className="capitalize" variant={o.status==='delivered'?'default':o.status==='cancelled'?'destructive':'secondary'}>{o.status}</Badge></td>
+                <td className="p-3"><Link href={`/track/${o.id}`}><Button size="sm" variant="outline">Track</Button></Link></td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      </div>
+    )
+    if (tab === 'products') return (
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-xl font-black">Products ({products.length})</h2>
+          <Button className="rounded-full">+ Add Product</Button>
+        </div>
+        <div className="rounded-2xl border overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-secondary/50 text-xs uppercase"><tr><th className="p-3 text-left">Product</th><th className="p-3">Brand</th><th className="p-3">Category</th><th className="p-3 text-right">Price</th><th className="p-3">Stock</th><th className="p-3">Rating</th></tr></thead>
+            <tbody>{products.map(p => (
+              <tr key={p.id} className="border-t hover:bg-secondary/30">
+                <td className="p-3"><div className="flex items-center gap-2"><img src={p.images[0]} className="h-9 w-9 rounded object-cover" alt="" /><span className="line-clamp-1 max-w-[280px]">{p.name}</span></div></td>
+                <td className="p-3">{p.brand}</td>
+                <td className="p-3 capitalize">{p.subcategory}</td>
+                <td className="p-3 text-right font-bold">{formatINR(p.price)}</td>
+                <td className="p-3"><Badge variant={p.stock>10?'default':p.stock>0?'secondary':'destructive'}>{p.stock}</Badge></td>
+                <td className="p-3">{p.rating.toFixed(1)}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      </div>
+    )
+    if (tab === 'customers') return (
+      <div>
+        <h2 className="text-xl font-black mb-3">Customers</h2>
+        <div className="rounded-2xl border overflow-hidden"><table className="w-full text-sm">
+          <thead className="bg-secondary/50 text-xs uppercase"><tr><th className="p-3 text-left">ID</th><th className="p-3">Name</th><th className="p-3">Email</th><th className="p-3 text-right">Orders</th><th className="p-3 text-right">Lifetime Spend</th><th className="p-3">Joined</th></tr></thead>
+          <tbody>{customers.map(c => (<tr key={c.id} className="border-t hover:bg-secondary/30">
+            <td className="p-3 font-bold">{c.id}</td><td className="p-3">{c.name}</td><td className="p-3">{c.email}</td><td className="p-3 text-right">{c.orders}</td><td className="p-3 text-right font-bold">{formatINR(c.spend)}</td><td className="p-3">{c.joined}</td>
+          </tr>))}</tbody>
+        </table></div>
+      </div>
+    )
+    if (tab === 'coupons') return (
+      <div>
+        <div className="flex items-center justify-between mb-3"><h2 className="text-xl font-black">Coupons</h2><Button className="rounded-full">+ New Coupon</Button></div>
+        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3">{coupons.map(c => (
+          <div key={c.code} className="rounded-2xl border p-5 bg-gradient-to-br from-yellow-400 to-yellow-300 text-black">
+            <div className="text-xs font-bold uppercase tracking-widest">{c.discount}</div>
+            <div className="text-2xl font-black mt-1">{c.code}</div>
+            <div className="text-xs mt-2">Min order: {c.min ? formatINR(c.min) : '—'}</div>
+            <div className="text-xs">Cap: {c.cap}</div>
+            <div className="text-xs mt-3">Used {c.uses.toLocaleString()} times</div>
+          </div>
+        ))}</div>
+      </div>
+    )
+    if (tab === 'reviews') return (
+      <div>
+        <h2 className="text-xl font-black mb-3">Reviews Moderation</h2>
+        <div className="space-y-2">{reviews.map(r => (
+          <div key={r.id} className="rounded-2xl border p-4 flex flex-col md:flex-row md:items-center gap-3">
+            <img src={r.image} className="h-14 w-14 rounded object-cover" alt="" />
+            <div className="flex-1"><div className="font-bold text-sm line-clamp-1">{r.product}</div><div className="text-xs text-muted-foreground">{r.name} · {r.rating}★</div><div className="text-sm mt-1 line-clamp-2">{r.body}</div></div>
+            <Badge variant={r.status==='approved'?'default':'secondary'}>{r.status}</Badge>
+            <div className="flex gap-2"><Button size="sm" variant="outline">Approve</Button><Button size="sm" variant="destructive">Reject</Button></div>
+          </div>
+        ))}</div>
+      </div>
+    )
+    if (tab === 'banners') return (
+      <div>
+        <div className="flex items-center justify-between mb-3"><h2 className="text-xl font-black">Banner Management</h2><Button className="rounded-full">+ New Banner</Button></div>
+        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {['Mega Tech Sale','Build Your Rig','Garage Ready','Everyday Essentials'].map((b,i) => (
+            <div key={i} className="rounded-2xl border overflow-hidden">
+              <div className="aspect-[16/9] bg-gradient-to-br from-yellow-400 to-yellow-500 grid place-items-center text-black font-black text-lg">{b}</div>
+              <div className="p-3 flex justify-between items-center"><Badge>Published</Badge><div className="flex gap-2"><Button size="sm" variant="outline">Edit</Button><Button size="sm" variant="destructive">Delete</Button></div></div>
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+    if (tab === 'reports') return (
+      <div>
+        <h2 className="text-xl font-black mb-3">Reports</h2>
+        <div className="grid md:grid-cols-2 gap-4">
+          {['Daily Sales Report','Inventory Snapshot','Tax Report (GST)','Customer Segmentation','Refund Log','Seller Payouts'].map((r,i) => (
+            <div key={i} className="rounded-2xl border p-5 flex items-center justify-between">
+              <div><div className="font-bold">{r}</div><div className="text-xs text-muted-foreground">Last generated: today</div></div>
+              <Button size="sm" variant="outline">Download CSV</Button>
+            </div>
+          ))}
+        </div>
+      </div>
+    )
+    if (tab === 'shipping') return <Placeholder t="Shipping & Taxes" d="Configure shipping zones, rates, and tax rules (GST slabs) per category." />
+    if (tab === 'returns') return <Placeholder t="Returns & Refunds" d="Manage RMA requests, refund status and refund modes." />
+    if (tab === 'inventory') return <Placeholder t="Inventory" d="Track stock levels across warehouses, low-stock alerts, and reorder suggestions." />
+    if (tab === 'users') return <Placeholder t="User Management" d="Admins, moderators, sellers, staff — assign roles & permissions." />
+    if (tab === 'cms') return <Placeholder t="CMS Pages" d="Edit About, Contact, Legal, and static pages inline." />
+    if (tab === 'emails') return <Placeholder t="Email Templates" d="Order confirmation, shipping, delivery, refund emails with variable placeholders." />
+    if (tab === 'categories') return <Placeholder t="Categories" d="Add/edit categories, subcategories, ordering, and icons." />
+    if (tab === 'settings') return <Placeholder t="Settings" d="Store name, contact, currency, payment providers, integrations." />
+    return null
+  }
+
+  return (
+    <div className="grid grid-cols-12 min-h-screen">
+      <aside className="col-span-12 md:col-span-3 lg:col-span-2 border-r bg-sidebar text-sidebar-foreground p-3 md:min-h-screen">
+        <div className="flex items-center gap-2 p-2 mb-2"><Logo size={32} /><div className="font-black tracking-widest text-sm">ZAMY ADMIN</div></div>
+        <nav className="flex md:flex-col gap-1 overflow-x-auto no-scrollbar">
+          {NAV.map(n => { const I = n.i; return (
+            <Link key={n.k} href={`/admin?tab=${n.k}`} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium whitespace-nowrap ${tab===n.k?'bg-primary text-primary-foreground':'hover:bg-secondary'}`}>
+              <I size={16} /> <span>{n.t}</span>
+            </Link>
+          )})}
+          <Link href="/" className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-muted-foreground hover:bg-secondary mt-3"><LogOut size={16} /> Back to store</Link>
+        </nav>
+      </aside>
+      <main className="col-span-12 md:col-span-9 lg:col-span-10 p-4 md:p-6 bg-background">
+        <Content />
+      </main>
+    </div>
+  )
+}
+
+function Placeholder({ t, d }) { return (<div><h2 className="text-xl font-black">{t}</h2><p className="text-muted-foreground mt-2">{d}</p><div className="mt-4 rounded-2xl border border-dashed p-10 text-center text-muted-foreground">Coming soon in Phase 3 — module scaffolded and ready for wiring.</div></div>) }
+
+export default function Admin() { return <Suspense fallback={<div />}><Inner /></Suspense> }
