@@ -8,6 +8,8 @@ import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { formatINR } from '@/lib/store'
 import Logo from '@/components/site/Logo'
+import { useAuthGate } from '@/lib/auth'
+import AuthBar from '@/components/site/AuthBar'
 
 const NAV = [
   { k:'dashboard', t:'Dashboard', i:LayoutDashboard },
@@ -20,14 +22,19 @@ const NAV = [
 ]
 
 function Inner() {
+  const gate = useAuthGate('seller')
   const sp = useSearchParams()
   const tab = sp.get('tab') || 'dashboard'
   const [data, setData] = useState(null)
   const [orders, setOrders] = useState([])
   useEffect(() => {
-    fetch('/api/seller/analytics').then(r=>r.json()).then(setData)
-    fetch('/api/seller/orders').then(r=>r.json()).then(d => setOrders(d.items||[]))
-  }, [])
+    if (gate.loading || !gate.user) return
+    const h = { Authorization: `Bearer ${gate.user.token}` }
+    fetch('/api/seller/analytics', { headers: h }).then(r=>r.json()).then(setData)
+    fetch('/api/seller/orders', { headers: h }).then(r=>r.json()).then(d => setOrders(d.items||[]))
+  }, [gate.loading, gate.user])
+
+  if (gate.loading) return <div className="min-h-screen grid place-items-center text-muted-foreground">Verifying access…</div>
 
   const KPI = ({ label, value, sub, Icon }) => (
     <div className="rounded-2xl border p-5 bg-card">
@@ -144,7 +151,10 @@ function Inner() {
           <Link href="/" className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-muted-foreground hover:bg-secondary mt-3"><LogOut size={16} /> Back to store</Link>
         </nav>
       </aside>
-      <main className="col-span-12 md:col-span-9 lg:col-span-10 p-4 md:p-6 bg-background"><Content /></main>
+      <main className="col-span-12 md:col-span-9 lg:col-span-10 bg-background flex flex-col">
+        <AuthBar role="seller" />
+        <div className="p-4 md:p-6 flex-1"><Content /></div>
+      </main>
     </div>
   )
 }

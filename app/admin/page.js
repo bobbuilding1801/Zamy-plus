@@ -9,6 +9,8 @@ import Logo from '@/components/site/Logo'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
+import { useAuthGate, getAuth } from '@/lib/auth'
+import AuthBar from '@/components/site/AuthBar'
 
 const NAV = [
   { k:'dashboard', t:'Dashboard', i:LayoutDashboard },
@@ -33,6 +35,7 @@ const YELLOW='#FFD400', BLACK='#111', GREY='#e5e7eb'
 const PIE_COLORS = ['#FFD400','#111','#4b5563','#9ca3af','#f59e0b','#fde68a','#374151','#6b7280']
 
 function Inner() {
+  const gate = useAuthGate('admin')
   const sp = useSearchParams()
   const tab = sp.get('tab') || 'dashboard'
   const [analytics, setAnalytics] = useState(null)
@@ -43,13 +46,18 @@ function Inner() {
   const [products, setProducts] = useState([])
 
   useEffect(() => {
-    fetch('/api/admin/analytics').then(r=>r.json()).then(setAnalytics)
-    fetch('/api/admin/orders').then(r=>r.json()).then(d => setOrders(d.items||[]))
-    fetch('/api/admin/customers').then(r=>r.json()).then(d => setCustomers(d.items||[]))
-    fetch('/api/admin/coupons').then(r=>r.json()).then(d => setCoupons(d.items||[]))
-    fetch('/api/admin/reviews').then(r=>r.json()).then(d => setReviews(d.items||[]))
-    fetch('/api/products?limit=30').then(r=>r.json()).then(d => setProducts(d.items||[]))
-  }, [])
+    if (gate.loading || !gate.user) return
+    const h = { Authorization: `Bearer ${gate.user.token}` }
+    const j = (u) => fetch(u, { headers: h }).then(r => r.json())
+    j('/api/admin/analytics').then(setAnalytics)
+    j('/api/admin/orders').then(d => setOrders(d.items || []))
+    j('/api/admin/customers').then(d => setCustomers(d.items || []))
+    j('/api/admin/coupons').then(d => setCoupons(d.items || []))
+    j('/api/admin/reviews').then(d => setReviews(d.items || []))
+    fetch('/api/products?limit=30').then(r => r.json()).then(d => setProducts(d.items || []))
+  }, [gate.loading, gate.user])
+
+  if (gate.loading) return <div className="min-h-screen grid place-items-center text-muted-foreground">Verifying access…</div>
 
   const KPI = ({ label, value, sub, Icon, tone='primary' }) => (
     <div className="rounded-2xl border p-5 bg-card">
@@ -270,8 +278,9 @@ function Inner() {
           <Link href="/" className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm text-muted-foreground hover:bg-secondary mt-3"><LogOut size={16} /> Back to store</Link>
         </nav>
       </aside>
-      <main className="col-span-12 md:col-span-9 lg:col-span-10 p-4 md:p-6 bg-background">
-        <Content />
+      <main className="col-span-12 md:col-span-9 lg:col-span-10 bg-background flex flex-col">
+        <AuthBar role="admin" />
+        <div className="p-4 md:p-6 flex-1"><Content /></div>
       </main>
     </div>
   )

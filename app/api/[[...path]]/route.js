@@ -1,10 +1,40 @@
 import { NextResponse } from 'next/server'
 import { v4 as uuidv4 } from 'uuid'
 import { MongoClient } from 'mongodb'
+import crypto from 'crypto'
 import { PRODUCTS, CATEGORIES, BRANDS, findProduct, filterProducts, suggestProducts, similarProducts } from '@/lib/data'
 import { chatCompletion } from '@/lib/llm'
 
 export const runtime = 'nodejs'
+
+// --- Auth helpers ---
+function b64url(buf) { return Buffer.from(buf).toString('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'') }
+function b64urlDecode(s) { s = s.replace(/-/g,'+').replace(/_/g,'/'); while (s.length % 4) s += '='; return Buffer.from(s, 'base64').toString() }
+function sign(payload, secret) { return crypto.createHmac('sha256', secret).update(payload).digest('base64').replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'') }
+function makeToken(email, role) {
+  const secret = process.env.AUTH_SECRET || 'dev-secret'
+  const body = JSON.stringify({ email, role, iat: Date.now(), exp: Date.now() + 7*86400000 })
+  const p = b64url(body); const sig = sign(p, secret)
+  return `${p}.${sig}`
+}
+function verifyToken(token) {
+  try {
+    const [p, sig] = String(token || '').split('.')
+    if (!p || !sig) return null
+    const secret = process.env.AUTH_SECRET || 'dev-secret'
+    if (sign(p, secret) !== sig) return null
+    const data = JSON.parse(b64urlDecode(p))
+    if (!data.exp || data.exp < Date.now()) return null
+    return data
+  } catch { return null }
+}
+function requireAuth(request, role) {
+  const auth = request.headers.get('authorization') || ''
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : ''
+  const t = verifyToken(token)
+  if (!t || (role && t.role !== role)) return null
+  return t
+}
 
 let client, db
 async function getDb() {
@@ -79,8 +109,28 @@ async function handler(request, { params }) {
 
   try {
     if ((route === '/' || route === '/root') && method === 'GET') {
-      return cors(NextResponse.json({ ok: true, service: 'ZAMY API', version: '1.1.0' }))
+      return cors(NextResponse.json({ ok: true, service: 'ZAMY API', version: '1.2.0' }))
     }
+
+    // ---- AUTH ----
+    if (route === '/auth/login' && method === 'POST') {
+      const { email = '', password = '', role = 'admin' } = await request.json()
+      const cfg = role === 'seller'
+        ? { emails: (process.env.SELLER_EMAILS || 'seller@zamy.market').toLowerCase().split(',').map(s=>s.trim()), password: process.env.SELLER_PASSWORD || 'zamy2025' }
+        : { emails: (process.env.ADMIN_EMAILS  || 'admin@zamy.market' ).toLowerCase().split(',').map(s=>s.trim()), password: process.env.ADMIN_PASSWORD  || 'zamy2025' }
+      const em = String(email).toLowerCase().trim()
+      if (!cfg.emails.includes(em)) return cors(NextResponse.json({ ok:false, error: 'Email not authorized for this role.' }, { status: 401 }))
+      if (String(password) !== cfg.password) return cors(NextResponse.json({ ok:false, error: 'Incorrect password.' }, { status: 401 }))
+      const token = makeToken(em, role)
+      return cors(NextResponse.json({ ok:true, email: em, role, token }))
+    }
+    if (route === '/auth/verify' && method === 'POST') {
+      const { token = '' } = await request.json().catch(() => ({}))
+      const t = verifyToken(token)
+      if (!t) return cors(NextResponse.json({ ok:false }, { status: 401 }))
+      return cors(NextResponse.json({ ok:true, email: t.email, role: t.role }))
+    }
+
     if (route === '/categories' && method === 'GET') return cors(NextResponse.json({ items: CATEGORIES }))
     if (route === '/brands' && method === 'GET') return cors(NextResponse.json({ items: BRANDS }))
 
@@ -177,7 +227,13 @@ async function handler(request, { params }) {
       return cors(NextResponse.json(trackingFor(orderId)))
     }
 
-    // Admin
+    // Admin (auth required)
+    if (route.startsWith('/admin/')) {
+      if (!requireAuth(request, 'admin')) return cors(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+    }
+    if (route.startsWith('/seller/')) {
+      if (!requireAuth(request, 'seller')) return cors(NextResponse.json({ error: 'Unauthorized' }, { status: 401 }))
+    }
     if (route === '/admin/analytics' && method === 'GET') return cors(NextResponse.json(adminAnalytics()))
     if (route === '/admin/orders' && method === 'GET') {
       // Fake orders derived from products
