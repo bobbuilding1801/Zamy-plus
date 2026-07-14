@@ -2,7 +2,7 @@
 import { Suspense, useEffect, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import Link from 'next/link'
-import { LayoutDashboard, ShoppingBag, Boxes, Users, Ticket, Star, Settings, Tag, LineChart, Truck, Layers, Mail, Image as ImageIcon, LogOut, TrendingUp, DollarSign, Package, UsersRound } from 'lucide-react'
+import { LayoutDashboard, ShoppingBag, Boxes, Users, Ticket, Star, Settings, Tag, LineChart, Truck, Layers, Mail, Image as ImageIcon, LogOut, TrendingUp, DollarSign, Package, UsersRound, LifeBuoy } from 'lucide-react'
 import { AreaChart, Area, PieChart, Pie, Cell, ResponsiveContainer, XAxis, YAxis, Tooltip, BarChart, Bar, CartesianGrid, Legend } from 'recharts'
 import { formatINR } from '@/lib/store'
 import Logo from '@/components/site/Logo'
@@ -12,7 +12,7 @@ import { Badge } from '@/components/ui/badge'
 import { useAuthGate, getAuth } from '@/lib/auth'
 import AuthBar from '@/components/site/AuthBar'
 import ProductManager from '@/components/admin/ProductManager'
-import { AdminOrdersTable, AdminCoupons, AdminReviews, AdminReports } from '@/components/admin/AdminModules'
+import { AdminOrdersTable, AdminCoupons, AdminReviews, AdminReports, AdminReturns, AdminTickets } from '@/components/admin/AdminModules'
 
 const NAV = [
   { k:'dashboard', t:'Dashboard', i:LayoutDashboard },
@@ -24,6 +24,7 @@ const NAV = [
   { k:'coupons', t:'Coupons', i:Ticket },
   { k:'reviews', t:'Reviews', i:Star },
   { k:'returns', t:'Returns & Refunds', i:Truck },
+  { k:'tickets', t:'Support Tickets', i:LifeBuoy },
   { k:'shipping', t:'Shipping & Taxes', i:Truck },
   { k:'reports', t:'Reports', i:LineChart },
   { k:'users', t:'User Management', i:UsersRound },
@@ -182,7 +183,8 @@ function Inner() {
     )
     if (tab === 'reports') return <AdminReports />
     if (tab === 'shipping') return <Placeholder t="Shipping & Taxes" d="Configure shipping zones, rates, and tax rules (GST slabs) per category." />
-    if (tab === 'returns') return <Placeholder t="Returns & Refunds" d="Manage RMA requests, refund status and refund modes." />
+    if (tab === 'returns') return <AdminReturns token={gate.user?.token} />
+    if (tab === 'tickets') return <AdminTickets token={gate.user?.token} />
     if (tab === 'inventory') return <Placeholder t="Inventory" d="Track stock levels across warehouses, low-stock alerts, and reorder suggestions." />
     if (tab === 'users') return <Placeholder t="User Management" d="Admins, moderators, sellers, staff — assign roles & permissions." />
     if (tab === 'cms') return <Placeholder t="CMS Pages" d="Edit About, Contact, Legal, and static pages inline." />

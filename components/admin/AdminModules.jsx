@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { toast } from 'sonner'
 import { formatINR } from '@/lib/store'
-import { Plus, Trash2, Pencil } from 'lucide-react'
+import { Plus, Trash2, Pencil, Send, ArrowLeft } from 'lucide-react'
 
 const STATUSES = ['confirmed','packed','shipped','out','delivered','cancelled']
 const STATUS_LABEL = { confirmed:'Confirmed', packed:'Packed', shipped:'Shipped', out:'Out for Delivery', delivered:'Delivered', cancelled:'Cancelled' }
@@ -181,3 +181,188 @@ export function AdminReports() {
     </div>
   )
 }
+
+const RMA_STATUSES = ['requested','approved','picked','refunded','rejected']
+const RMA_LABEL = { requested:'Requested', approved:'Approved', picked:'Picked Up', refunded:'Refunded', rejected:'Rejected' }
+const RMA_COLOR = {
+  requested: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-950/40 dark:text-yellow-300',
+  approved:  'bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-300',
+  picked:    'bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-300',
+  refunded:  'bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-300',
+  rejected:  'bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-300',
+}
+
+export function AdminReturns({ token }) {
+  const [items, setItems] = useState([])
+  const [filter, setFilter] = useState('all')
+  const [loading, setLoading] = useState(true)
+  const load = () => fetch('/api/admin/returns', { headers: { Authorization:`Bearer ${token}` }}).then(r=>r.json()).then(d => { setItems(d.items || []); setLoading(false) })
+  useEffect(() => { if (token) load() }, [token])
+
+  const setStatus = async (id, status) => {
+    try {
+      const r = await fetch(`/api/admin/returns/${id}`, { method:'PUT', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`}, body: JSON.stringify({ status })})
+      const d = await r.json()
+      if (!d.ok) throw new Error(d.error || 'Failed')
+      toast.success(`${id} → ${RMA_LABEL[status]}`)
+      load()
+    } catch (e) { toast.error(String(e.message || e)) }
+  }
+
+  const view = filter === 'all' ? items : items.filter(x => x.status === filter)
+  const stats = RMA_STATUSES.reduce((acc, s) => { acc[s] = items.filter(x => x.status === s).length; return acc }, {})
+  const totalRefunded = items.filter(x => x.status === 'refunded').reduce((s,x) => s + (x.amount || 0), 0)
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="text-xl font-black">Returns &amp; Refunds</h2>
+        <div className="text-xs text-muted-foreground">Total refunded: <b className="text-foreground">{formatINR(totalRefunded)}</b></div>
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
+        <button onClick={() => setFilter('all')} className={`rounded-2xl border p-3 text-left ${filter==='all'?'border-primary bg-primary/5':''}`}>
+          <div className="text-[10px] uppercase font-bold text-muted-foreground">All</div>
+          <div className="text-xl font-black">{items.length}</div>
+        </button>
+        {RMA_STATUSES.map(s => (
+          <button key={s} onClick={() => setFilter(s)} className={`rounded-2xl border p-3 text-left ${filter===s?'border-primary bg-primary/5':''}`}>
+            <div className="text-[10px] uppercase font-bold text-muted-foreground">{RMA_LABEL[s]}</div>
+            <div className="text-xl font-black">{stats[s] || 0}</div>
+          </button>
+        ))}
+      </div>
+      <div className="rounded-2xl border overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-secondary/50 text-xs uppercase"><tr><th className="p-3 text-left">RMA</th><th className="p-3 text-left">Customer</th><th className="p-3 text-left">Item</th><th className="p-3">Mode</th><th className="p-3 text-right">Amount</th><th className="p-3">Status</th></tr></thead>
+          <tbody>
+            {view.map(r => (
+              <tr key={r.id} className="border-t hover:bg-secondary/30 align-middle">
+                <td className="p-3"><div className="font-bold">{r.id}</div><div className="text-[11px] text-muted-foreground">#{r.orderId} · {new Date(r.createdAt).toLocaleDateString()}</div></td>
+                <td className="p-3 text-xs">{r.email}</td>
+                <td className="p-3"><div className="flex items-center gap-2 max-w-[280px]">{r.productImage && <img src={r.productImage} className="h-8 w-8 rounded object-cover" alt="" />}<span className="line-clamp-2">{r.productName}</span></div><div className="text-[11px] text-muted-foreground mt-1 line-clamp-2">{r.reason}</div></td>
+                <td className="p-3 text-xs capitalize">{r.mode || 'refund'}</td>
+                <td className="p-3 text-right font-bold">{formatINR(r.amount || 0)}</td>
+                <td className="p-3">
+                  <Select value={r.status} onValueChange={(v) => setStatus(r.id, v)}>
+                    <SelectTrigger className="w-[140px] h-8"><SelectValue /></SelectTrigger>
+                    <SelectContent>{RMA_STATUSES.map(s => <SelectItem key={s} value={s}>{RMA_LABEL[s]}</SelectItem>)}</SelectContent>
+                  </Select>
+                </td>
+              </tr>
+            ))}
+            {!loading && view.length === 0 && <tr><td colSpan={6} className="p-8 text-center text-muted-foreground">No return requests {filter!=='all' ? `in "${RMA_LABEL[filter]}"` : 'yet'}.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+const TKT_STATUSES = ['open','pending','resolved','closed']
+const TKT_LABEL = { open:'Open', pending:'Pending', resolved:'Resolved', closed:'Closed' }
+const TKT_COLOR = {
+  open:     'bg-yellow-100 text-yellow-800 dark:bg-yellow-950/40 dark:text-yellow-300',
+  pending:  'bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-300',
+  resolved: 'bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-300',
+  closed:   'bg-gray-100 text-gray-800 dark:bg-gray-800/40 dark:text-gray-300',
+}
+
+export function AdminTickets({ token }) {
+  const [items, setItems] = useState([])
+  const [active, setActive] = useState(null)
+  const [reply, setReply] = useState('')
+  const [filter, setFilter] = useState('all')
+  const load = () => fetch('/api/admin/tickets', { headers: { Authorization:`Bearer ${token}` }}).then(r=>r.json()).then(d => setItems(d.items || []))
+  useEffect(() => { if (token) load() }, [token])
+
+  const setStatus = async (id, status) => {
+    await fetch(`/api/admin/tickets/${id}`, { method:'PUT', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`}, body: JSON.stringify({ status })})
+    toast.success('Status → ' + TKT_LABEL[status])
+    load(); if (active?.id === id) setActive(prev => ({ ...prev, status }))
+  }
+  const sendReply = async () => {
+    if (!reply.trim() || !active) return
+    const r = await fetch(`/api/admin/tickets/${active.id}/reply`, { method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${token}`}, body: JSON.stringify({ message: reply })})
+    const d = await r.json()
+    if (!d.ok) return toast.error(d.error || 'Failed')
+    setReply('')
+    const r2 = await fetch('/api/admin/tickets', { headers: { Authorization:`Bearer ${token}` }})
+    const d2 = await r2.json()
+    setItems(d2.items || [])
+    setActive((d2.items || []).find(t => t.id === active.id) || active)
+  }
+
+  if (active) {
+    return (
+      <div className="space-y-4">
+        <button onClick={() => setActive(null)} className="text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1"><ArrowLeft size={14} /> Back to tickets</button>
+        <div className="rounded-2xl border bg-card">
+          <div className="p-4 border-b flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="font-black">{active.subject}</div>
+              <div className="text-xs text-muted-foreground">{active.id} · {active.email} · {active.category}{active.orderId && ` · Order #${active.orderId}`}</div>
+            </div>
+            <div className="flex gap-2 items-center">
+              <Select value={active.status} onValueChange={(v) => setStatus(active.id, v)}>
+                <SelectTrigger className="w-[130px] h-8"><SelectValue /></SelectTrigger>
+                <SelectContent>{TKT_STATUSES.map(s => <SelectItem key={s} value={s}>{TKT_LABEL[s]}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="p-4 space-y-3 max-h-[480px] overflow-y-auto">
+            {active.messages?.map(m => (
+              <div key={m.id} className={`flex ${m.from === 'agent' ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm ${m.from === 'agent' ? 'bg-primary text-primary-foreground rounded-br-sm' : 'bg-secondary rounded-bl-sm'}`}>
+                  <div className="whitespace-pre-wrap">{m.text}</div>
+                  <div className="text-[10px] opacity-70 mt-1">{m.from === 'agent' ? 'You' : (m.by || 'Customer')} · {new Date(m.at).toLocaleString()}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          {active.status !== 'closed' && (
+            <div className="p-3 border-t flex gap-2">
+              <Input value={reply} onChange={e => setReply(e.target.value)} onKeyDown={e => e.key==='Enter' && sendReply()} placeholder="Reply to customer…" />
+              <Button onClick={sendReply}><Send size={14} className="mr-1" /> Send</Button>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  const view = filter === 'all' ? items : items.filter(x => x.status === filter)
+  const stats = TKT_STATUSES.reduce((acc, s) => { acc[s] = items.filter(x => x.status === s).length; return acc }, {})
+
+  return (
+    <div className="space-y-4">
+      <h2 className="text-xl font-black">Support Tickets</h2>
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+        <button onClick={() => setFilter('all')} className={`rounded-2xl border p-3 text-left ${filter==='all'?'border-primary bg-primary/5':''}`}>
+          <div className="text-[10px] uppercase font-bold text-muted-foreground">All</div>
+          <div className="text-xl font-black">{items.length}</div>
+        </button>
+        {TKT_STATUSES.map(s => (
+          <button key={s} onClick={() => setFilter(s)} className={`rounded-2xl border p-3 text-left ${filter===s?'border-primary bg-primary/5':''}`}>
+            <div className="text-[10px] uppercase font-bold text-muted-foreground">{TKT_LABEL[s]}</div>
+            <div className="text-xl font-black">{stats[s] || 0}</div>
+          </button>
+        ))}
+      </div>
+      <div className="space-y-2">
+        {view.map(t => (
+          <button key={t.id} onClick={() => setActive(t)} className="w-full text-left rounded-2xl border p-4 hover:border-primary bg-card">
+            <div className="flex items-center justify-between gap-2">
+              <div className="min-w-0">
+                <div className="flex items-center gap-2"><div className="font-bold truncate">{t.subject}</div><span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded ${TKT_COLOR[t.status] || 'bg-secondary'}`}>{t.status}</span></div>
+                <div className="text-xs text-muted-foreground">{t.id} · {t.email} · {t.category} · {t.messages?.length || 0} msgs · Updated {new Date(t.updatedAt).toLocaleString()}</div>
+              </div>
+              <div className="text-xs text-muted-foreground">→</div>
+            </div>
+          </button>
+        ))}
+        {view.length === 0 && <div className="text-muted-foreground text-sm text-center py-10 rounded-2xl border border-dashed">No tickets{filter!=='all' && ` in "${TKT_LABEL[filter]}"`}.</div>}
+      </div>
+    </div>
+  )
+}
+

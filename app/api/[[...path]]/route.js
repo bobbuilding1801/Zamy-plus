@@ -253,6 +253,95 @@ async function handler(request, { params }) {
       return cors(NextResponse.json({ items: clean }))
     }
 
+    // ---- CUSTOMER RETURNS ----
+    if (route === '/customer/returns' && method === 'GET') {
+      const t = requireAuth(request, 'customer')
+      if (!t) return cors(NextResponse.json({ ok:false }, { status: 401 }))
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ items: [] }))
+      const items = await database.collection('returns').find({ email: t.email }).sort({ createdAt: -1 }).toArray().catch(() => [])
+      return cors(NextResponse.json({ items: items.map(({_id, ...r}) => r) }))
+    }
+    if (route === '/customer/returns' && method === 'POST') {
+      const t = requireAuth(request, 'customer')
+      if (!t) return cors(NextResponse.json({ ok:false }, { status: 401 }))
+      const body = await request.json()
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ ok:false }, { status: 500 }))
+      const orderId = String(body.orderId || '').trim()
+      const order = await database.collection('orders').findOne({ id: orderId, 'address.email': t.email })
+      if (!order) return cors(NextResponse.json({ ok:false, error: 'Order not found for this account' }, { status: 404 }))
+      const reason = String(body.reason || '').slice(0, 300)
+      const productId = String(body.productId || (order.items?.[0]?.product?.id) || '')
+      const product = order.items?.find(i => i.product?.id === productId)?.product || order.items?.[0]?.product
+      const doc = {
+        id: 'RMA-' + uuidv4().slice(0,8).toUpperCase(),
+        orderId,
+        email: t.email,
+        productId,
+        productName: product?.name || '—',
+        productImage: product?.images?.[0] || '',
+        reason,
+        mode: body.mode || 'refund', // refund | replace
+        status: 'requested',        // requested | approved | picked | refunded | rejected
+        amount: order.total || 0,
+        createdAt: Date.now(),
+        history: [{ at: Date.now(), by: t.email, note: 'Return requested' }],
+      }
+      await database.collection('returns').insertOne({ ...doc })
+      return cors(NextResponse.json({ ok:true, item: doc }))
+    }
+
+    // ---- CUSTOMER SUPPORT TICKETS ----
+    if (route === '/customer/tickets' && method === 'GET') {
+      const t = requireAuth(request, 'customer')
+      if (!t) return cors(NextResponse.json({ ok:false }, { status: 401 }))
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ items: [] }))
+      const items = await database.collection('tickets').find({ email: t.email }).sort({ updatedAt: -1 }).toArray().catch(() => [])
+      return cors(NextResponse.json({ items: items.map(({_id, ...r}) => r) }))
+    }
+    if (route === '/customer/tickets' && method === 'POST') {
+      const t = requireAuth(request, 'customer')
+      if (!t) return cors(NextResponse.json({ ok:false }, { status: 401 }))
+      const body = await request.json()
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ ok:false }, { status: 500 }))
+      const subject = String(body.subject || '').slice(0, 120) || 'Support request'
+      const message = String(body.message || '').slice(0, 2000)
+      if (!message) return cors(NextResponse.json({ ok:false, error:'Message is required' }, { status: 400 }))
+      const doc = {
+        id: 'TKT-' + uuidv4().slice(0,8).toUpperCase(),
+        email: t.email,
+        subject,
+        category: body.category || 'general', // order | product | delivery | refund | general
+        orderId: body.orderId || '',
+        status: 'open',                        // open | pending | resolved | closed
+        priority: body.priority || 'normal',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        messages: [{ id: uuidv4().slice(0,6), from: 'customer', by: t.email, text: message, at: Date.now() }],
+      }
+      await database.collection('tickets').insertOne({ ...doc })
+      return cors(NextResponse.json({ ok:true, item: doc }))
+    }
+    if (route.startsWith('/customer/tickets/') && route.endsWith('/reply') && method === 'POST') {
+      const t = requireAuth(request, 'customer')
+      if (!t) return cors(NextResponse.json({ ok:false }, { status: 401 }))
+      const id = route.split('/')[3]
+      const body = await request.json()
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ ok:false }, { status: 500 }))
+      const text = String(body.message || '').slice(0, 2000)
+      if (!text) return cors(NextResponse.json({ ok:false, error:'Message required' }, { status: 400 }))
+      const msg = { id: uuidv4().slice(0,6), from: 'customer', by: t.email, text, at: Date.now() }
+      await database.collection('tickets').updateOne(
+        { id, email: t.email },
+        { $push: { messages: msg }, $set: { updatedAt: Date.now(), status: 'open' } },
+      )
+      return cors(NextResponse.json({ ok:true }))
+    }
+
     if (route === '/categories' && method === 'GET') return cors(NextResponse.json({ items: CATEGORIES }))
     if (route === '/brands' && method === 'GET') return cors(NextResponse.json({ items: BRANDS }))
 
@@ -537,6 +626,67 @@ async function handler(request, { params }) {
       const allowed = ['confirmed','packed','shipped','out','delivered','cancelled']
       if (!allowed.includes(status)) return cors(NextResponse.json({ ok:false, error:'Invalid status' }, { status: 400 }))
       await database.collection('orders').updateOne({ id }, { $set: { status } })
+      return cors(NextResponse.json({ ok:true }))
+    }
+
+    // Admin: returns & refunds
+    if (route === '/admin/returns' && method === 'GET') {
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ items: [] }))
+      const items = await database.collection('returns').find({}).sort({ createdAt: -1 }).limit(200).toArray().catch(() => [])
+      return cors(NextResponse.json({ items: items.map(({_id, ...r}) => r) }))
+    }
+    if (route.startsWith('/admin/returns/') && method === 'PUT') {
+      const id = route.split('/')[3]
+      const body = await request.json()
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ ok:false }, { status: 500 }))
+      const status = String(body.status || '')
+      const allowed = ['requested','approved','picked','refunded','rejected']
+      if (!allowed.includes(status)) return cors(NextResponse.json({ ok:false, error:'Invalid status' }, { status: 400 }))
+      const admin = requireAuth(request, 'admin')
+      const note = String(body.note || `Status updated to ${status}`).slice(0, 300)
+      await database.collection('returns').updateOne(
+        { id },
+        {
+          $set: { status, updatedAt: Date.now() },
+          $push: { history: { at: Date.now(), by: admin?.email || 'admin', note } },
+        },
+      )
+      return cors(NextResponse.json({ ok:true }))
+    }
+
+    // Admin: support tickets
+    if (route === '/admin/tickets' && method === 'GET') {
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ items: [] }))
+      const items = await database.collection('tickets').find({}).sort({ updatedAt: -1 }).limit(200).toArray().catch(() => [])
+      return cors(NextResponse.json({ items: items.map(({_id, ...r}) => r) }))
+    }
+    if (route.startsWith('/admin/tickets/') && route.endsWith('/reply') && method === 'POST') {
+      const id = route.split('/')[3]
+      const body = await request.json()
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ ok:false }, { status: 500 }))
+      const admin = requireAuth(request, 'admin')
+      const text = String(body.message || '').slice(0, 2000)
+      if (!text) return cors(NextResponse.json({ ok:false, error:'Message required' }, { status: 400 }))
+      const msg = { id: uuidv4().slice(0,6), from: 'agent', by: admin?.email || 'ZAMY Support', text, at: Date.now() }
+      await database.collection('tickets').updateOne(
+        { id },
+        { $push: { messages: msg }, $set: { updatedAt: Date.now(), status: 'pending' } },
+      )
+      return cors(NextResponse.json({ ok:true }))
+    }
+    if (route.startsWith('/admin/tickets/') && method === 'PUT') {
+      const id = route.split('/')[3]
+      const body = await request.json()
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ ok:false }, { status: 500 }))
+      const patch = { updatedAt: Date.now() }
+      if (body.status && ['open','pending','resolved','closed'].includes(body.status)) patch.status = body.status
+      if (body.priority && ['low','normal','high','urgent'].includes(body.priority)) patch.priority = body.priority
+      await database.collection('tickets').updateOne({ id }, { $set: patch })
       return cors(NextResponse.json({ ok:true }))
     }
 

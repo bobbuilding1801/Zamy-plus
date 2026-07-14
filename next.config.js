@@ -1,5 +1,11 @@
 const nextConfig = {
   output: 'standalone',
+  // Silence Next.js 15 dev-mode cross-origin warning (Kubernetes ingress).
+  allowedDevOrigins: [
+    '*.preview.emergentagent.com',
+    '*.preview.emergentcf.cloud',
+    '*.cluster-12.preview.emergentcf.cloud',
+  ],
   images: {
     unoptimized: true,
     remotePatterns: [

@@ -5,7 +5,7 @@ import { useSearchParams } from 'next/navigation'
 import { useShop, formatINR } from '@/lib/store'
 import { useCustomer } from '@/lib/customer'
 import Link from 'next/link'
-import { LayoutDashboard, ShoppingBag, FileText, Heart, MapPin, CreditCard, RotateCcw, Wallet, Bell, LifeBuoy, Settings, Download, Package, TruckIcon, LogOut, LogIn } from 'lucide-react'
+import { LayoutDashboard, ShoppingBag, FileText, Heart, MapPin, CreditCard, RotateCcw, Wallet, Bell, LifeBuoy, Settings, Download, Package, TruckIcon, LogOut, LogIn, Send, Plus, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { toast } from 'sonner'
@@ -31,11 +31,18 @@ function Inner() {
   const { wishlist, notif, markNotifRead, orders: localOrders } = useShop()
   const [dbOrders, setDbOrders] = useState([])
   const [profile, setProfile] = useState({ name: '', mobile: '' })
+  const [returns, setReturns] = useState([])
+  const [tickets, setTickets] = useState([])
+
+  const loadReturns = () => user && fetch('/api/customer/returns', { headers: { Authorization: `Bearer ${user.token}` } }).then(r=>r.json()).then(d => setReturns(d.items || []))
+  const loadTickets = () => user && fetch('/api/customer/tickets', { headers: { Authorization: `Bearer ${user.token}` } }).then(r=>r.json()).then(d => setTickets(d.items || []))
 
   useEffect(() => {
     if (!user) return
     fetch('/api/customer/orders', { headers: { Authorization: `Bearer ${user.token}` } }).then(r=>r.json()).then(d => setDbOrders(d.items || []))
     fetch('/api/customer/me', { headers: { Authorization: `Bearer ${user.token}` } }).then(r=>r.json()).then(d => setProfile({ name: d.profile?.name || '', mobile: d.profile?.mobile || '' }))
+    loadReturns()
+    loadTickets()
   }, [user])
 
   const allOrders = user ? dbOrders : localOrders
@@ -138,9 +145,9 @@ function Inner() {
     )}
     if (tab === 'invoices') return <Placeholder t="Invoices" d={<div>Open any order and click <b>Download Invoice</b>. Go to <Link className="text-primary underline" href="/account?tab=orders">Orders →</Link></div>} />
     if (tab === 'payments') return <Placeholder t="Payment Methods" d="Save cards after your first Razorpay transaction (requires signed-in checkout)." />
-    if (tab === 'returns') return <Placeholder t="Returns" d="Return an item within 7 days of delivery from the order detail page." />
-    if (tab === 'refunds') return <Placeholder t="Refunds" d="Refunds are auto-issued to the original payment method within 5-7 business days." />
-    if (tab === 'tickets') return <Placeholder t="Support Tickets" d="Chat with ZAMY Assistant (bottom-right) or email support@zamy.market." />
+    if (tab === 'returns') return <ReturnsTab user={user} orders={allOrders} returns={returns} reload={loadReturns} />
+    if (tab === 'refunds') return <RefundsTab returns={returns} />
+    if (tab === 'tickets') return <TicketsTab user={user} tickets={tickets} reload={loadTickets} orders={allOrders} />
     if (tab === 'settings') return (
       <div className="max-w-xl space-y-4">
         <h2 className="text-xl font-bold">Account Settings</h2>
@@ -177,5 +184,247 @@ function Inner() {
 }
 
 function Placeholder({ t, d }) { return (<div><h2 className="text-xl font-bold">{t}</h2><p className="text-muted-foreground mt-1">{d}</p></div>) }
+
+function statusColor(s) {
+  return {
+    requested: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-950/40 dark:text-yellow-300',
+    approved: 'bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-300',
+    picked: 'bg-purple-100 text-purple-800 dark:bg-purple-950/40 dark:text-purple-300',
+    refunded: 'bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-300',
+    rejected: 'bg-red-100 text-red-800 dark:bg-red-950/40 dark:text-red-300',
+    open: 'bg-yellow-100 text-yellow-800 dark:bg-yellow-950/40 dark:text-yellow-300',
+    pending: 'bg-blue-100 text-blue-800 dark:bg-blue-950/40 dark:text-blue-300',
+    resolved: 'bg-green-100 text-green-800 dark:bg-green-950/40 dark:text-green-300',
+    closed: 'bg-gray-100 text-gray-800 dark:bg-gray-800/40 dark:text-gray-300',
+  }[s] || 'bg-secondary text-foreground'
+}
+
+function ReturnsTab({ user, orders, returns, reload }) {
+  const [open, setOpen] = useState(false)
+  const [form, setForm] = useState({ orderId: '', productId: '', reason: '', mode: 'refund' })
+  const eligible = orders.filter(o => ['delivered','shipped','out'].includes(o.status || 'confirmed'))
+  const selOrder = eligible.find(o => o.id === form.orderId)
+
+  const submit = async () => {
+    if (!form.orderId) return toast.error('Choose an order')
+    if (!form.reason.trim()) return toast.error('Tell us why you want to return')
+    const r = await fetch('/api/customer/returns', { method:'POST', headers: { 'Content-Type':'application/json', Authorization: `Bearer ${user.token}` }, body: JSON.stringify(form) })
+    const d = await r.json()
+    if (!d.ok) return toast.error(d.error || 'Failed')
+    toast.success('Return request submitted — ' + d.item.id)
+    setOpen(false); setForm({ orderId: '', productId: '', reason: '', mode: 'refund' }); reload()
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold">Returns</h2>
+          <p className="text-xs text-muted-foreground">Return items within 7 days of delivery. Track your RMA below.</p>
+        </div>
+        <Button onClick={() => setOpen(v => !v)} className="rounded-full"><Plus size={14} className="mr-1" /> {open ? 'Cancel' : 'Request Return'}</Button>
+      </div>
+
+      {open && (
+        <div className="rounded-2xl border p-5 space-y-3 bg-card">
+          <div>
+            <label className="text-xs font-semibold">Select Order</label>
+            <select value={form.orderId} onChange={e => setForm({ ...form, orderId: e.target.value, productId: '' })} className="w-full h-10 rounded-md border bg-background px-3 text-sm">
+              <option value="">— Pick a delivered order —</option>
+              {eligible.map(o => <option key={o.id} value={o.id}>#{o.id} · {formatINR(o.total)} · {o.items?.length || 0} items</option>)}
+            </select>
+          </div>
+          {selOrder && (
+            <div>
+              <label className="text-xs font-semibold">Item to return</label>
+              <select value={form.productId} onChange={e => setForm({ ...form, productId: e.target.value })} className="w-full h-10 rounded-md border bg-background px-3 text-sm">
+                <option value="">— Choose an item —</option>
+                {selOrder.items?.map((it, i) => <option key={i} value={it.product?.id}>{it.product?.name} × {it.qty}</option>)}
+              </select>
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-semibold">Mode</label>
+              <select value={form.mode} onChange={e => setForm({ ...form, mode: e.target.value })} className="w-full h-10 rounded-md border bg-background px-3 text-sm">
+                <option value="refund">Refund</option>
+                <option value="replace">Replace</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-semibold">Reason</label>
+            <textarea value={form.reason} onChange={e => setForm({ ...form, reason: e.target.value })} rows={3} placeholder="Damaged / Wrong item / Not as described / Better price elsewhere…" className="w-full rounded-md border bg-background p-3 text-sm" />
+          </div>
+          <Button onClick={submit} className="rounded-full w-full font-bold">Submit Return Request</Button>
+        </div>
+      )}
+
+      {returns.length === 0 ? (
+        <div className="rounded-2xl border border-dashed p-10 text-center text-muted-foreground">No return requests yet.</div>
+      ) : (
+        <div className="space-y-2">
+          {returns.map(r => (
+            <div key={r.id} className="rounded-2xl border p-4 bg-card">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-3 min-w-0">
+                  {r.productImage && <img src={r.productImage} className="h-12 w-12 rounded object-cover" alt="" />}
+                  <div className="min-w-0">
+                    <div className="font-bold truncate">{r.productName}</div>
+                    <div className="text-xs text-muted-foreground">RMA <b>{r.id}</b> · Order <b>#{r.orderId}</b> · {new Date(r.createdAt).toLocaleDateString()}</div>
+                  </div>
+                </div>
+                <span className={`text-[11px] font-bold uppercase px-2 py-0.5 rounded ${statusColor(r.status)}`}>{r.status}</span>
+              </div>
+              {r.reason && <p className="text-sm text-muted-foreground mt-2 line-clamp-2">Reason: {r.reason}</p>}
+              <div className="text-xs mt-1"><b>Mode:</b> {r.mode === 'replace' ? 'Replacement' : 'Refund'} · <b>Amount:</b> {formatINR(r.amount || 0)}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function RefundsTab({ returns }) {
+  const refunds = returns.filter(r => r.status === 'refunded' || r.status === 'approved' || r.status === 'picked')
+  return (
+    <div className="space-y-3">
+      <h2 className="text-xl font-bold">Refunds</h2>
+      <p className="text-xs text-muted-foreground">Refunds are auto-issued to the original payment method within 5-7 business days.</p>
+      {refunds.length === 0 ? (
+        <div className="rounded-2xl border border-dashed p-10 text-center text-muted-foreground">No refunds in progress.</div>
+      ) : refunds.map(r => (
+        <div key={r.id} className="rounded-2xl border p-4 flex flex-wrap items-center gap-3 justify-between bg-card">
+          <div className="min-w-0">
+            <div className="font-bold">{formatINR(r.amount || 0)}</div>
+            <div className="text-xs text-muted-foreground">RMA {r.id} · Order #{r.orderId} · {r.productName}</div>
+          </div>
+          <span className={`text-[11px] font-bold uppercase px-2 py-0.5 rounded ${statusColor(r.status)}`}>{r.status}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function TicketsTab({ user, tickets, reload, orders }) {
+  const [open, setOpen] = useState(false)
+  const [active, setActive] = useState(null)
+  const [form, setForm] = useState({ subject: '', category: 'general', orderId: '', message: '' })
+  const [reply, setReply] = useState('')
+
+  const create = async () => {
+    if (!form.message.trim()) return toast.error('Type your message')
+    const r = await fetch('/api/customer/tickets', { method:'POST', headers: { 'Content-Type':'application/json', Authorization: `Bearer ${user.token}` }, body: JSON.stringify(form) })
+    const d = await r.json()
+    if (!d.ok) return toast.error(d.error || 'Failed')
+    toast.success('Ticket ' + d.item.id + ' created')
+    setOpen(false); setForm({ subject: '', category: 'general', orderId: '', message: '' }); reload()
+  }
+  const sendReply = async () => {
+    if (!reply.trim()) return
+    const r = await fetch(`/api/customer/tickets/${active.id}/reply`, { method:'POST', headers: { 'Content-Type':'application/json', Authorization: `Bearer ${user.token}` }, body: JSON.stringify({ message: reply }) })
+    const d = await r.json()
+    if (!d.ok) return toast.error(d.error || 'Failed')
+    setReply(''); reload(); setTimeout(() => setActive(tickets.find(t => t.id === active.id) || active), 300)
+  }
+
+  if (active) {
+    const t = tickets.find(x => x.id === active.id) || active
+    return (
+      <div className="space-y-4">
+        <button onClick={() => setActive(null)} className="text-sm text-muted-foreground hover:text-foreground inline-flex items-center gap-1"><X size={14} /> Back to tickets</button>
+        <div className="rounded-2xl border bg-card">
+          <div className="p-4 border-b flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0">
+              <div className="font-black">{t.subject}</div>
+              <div className="text-xs text-muted-foreground">{t.id} · {t.category} · Opened {new Date(t.createdAt).toLocaleString()}</div>
+            </div>
+            <span className={`text-[11px] font-bold uppercase px-2 py-0.5 rounded ${statusColor(t.status)}`}>{t.status}</span>
+          </div>
+          <div className="p-4 space-y-3 max-h-[420px] overflow-y-auto">
+            {t.messages?.map(m => (
+              <div key={m.id} className={`flex ${m.from === 'customer' ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[80%] rounded-2xl px-4 py-2 text-sm ${m.from === 'customer' ? 'bg-primary text-primary-foreground rounded-br-sm' : 'bg-secondary rounded-bl-sm'}`}>
+                  <div className="whitespace-pre-wrap">{m.text}</div>
+                  <div className="text-[10px] opacity-70 mt-1">{m.from === 'customer' ? 'You' : 'ZAMY Support'} · {new Date(m.at).toLocaleString()}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          {t.status !== 'closed' && (
+            <div className="p-3 border-t flex gap-2">
+              <Input value={reply} onChange={e => setReply(e.target.value)} onKeyDown={e => e.key==='Enter' && sendReply()} placeholder="Type your reply…" />
+              <Button onClick={sendReply}><Send size={14} /></Button>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold">Support Tickets</h2>
+          <p className="text-xs text-muted-foreground">Chat with our team about orders, delivery, refunds and more.</p>
+        </div>
+        <Button onClick={() => setOpen(v => !v)} className="rounded-full"><Plus size={14} className="mr-1" /> {open ? 'Cancel' : 'New Ticket'}</Button>
+      </div>
+
+      {open && (
+        <div className="rounded-2xl border p-5 space-y-3 bg-card">
+          <div>
+            <label className="text-xs font-semibold">Subject</label>
+            <Input value={form.subject} onChange={e => setForm({ ...form, subject: e.target.value })} placeholder="Short summary" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-semibold">Category</label>
+              <select value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} className="w-full h-10 rounded-md border bg-background px-3 text-sm">
+                <option value="general">General</option>
+                <option value="order">Order Issue</option>
+                <option value="delivery">Delivery</option>
+                <option value="product">Product</option>
+                <option value="refund">Refund</option>
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-semibold">Related Order (optional)</label>
+              <select value={form.orderId} onChange={e => setForm({ ...form, orderId: e.target.value })} className="w-full h-10 rounded-md border bg-background px-3 text-sm">
+                <option value="">— None —</option>
+                {orders.map(o => <option key={o.id} value={o.id}>#{o.id}</option>)}
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-semibold">Message</label>
+            <textarea value={form.message} onChange={e => setForm({ ...form, message: e.target.value })} rows={4} placeholder="How can we help?" className="w-full rounded-md border bg-background p-3 text-sm" />
+          </div>
+          <Button onClick={create} className="rounded-full w-full font-bold">Submit Ticket</Button>
+        </div>
+      )}
+
+      {tickets.length === 0 ? (
+        <div className="rounded-2xl border border-dashed p-10 text-center text-muted-foreground">No tickets yet — start one above.</div>
+      ) : (
+        <div className="space-y-2">
+          {tickets.map(t => (
+            <button key={t.id} onClick={() => setActive(t)} className="w-full text-left rounded-2xl border p-4 hover:border-primary bg-card">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="font-bold truncate">{t.subject}</div>
+                  <div className="text-xs text-muted-foreground">{t.id} · {t.category} · {t.messages?.length || 0} messages · Updated {new Date(t.updatedAt).toLocaleString()}</div>
+                </div>
+                <span className={`text-[11px] font-bold uppercase px-2 py-0.5 rounded ${statusColor(t.status)}`}>{t.status}</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function Account() { return <SiteChrome><Suspense fallback={<div />}><Inner /></Suspense></SiteChrome> }
