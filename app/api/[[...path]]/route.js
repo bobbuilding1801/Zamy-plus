@@ -440,7 +440,17 @@ async function handler(request, { params }) {
       if (custAuth && (!body.address || !body.address.email)) {
         body.address = { ...(body.address || {}), email: custAuth.email }
       }
-      const order = { id: uuidv4().slice(0,8).toUpperCase(), createdAt: Date.now(), status: 'confirmed', ...body }
+      // Enrich item entries with product details so downstream views (returns, tracking, admin, emails) can show them.
+      const enrichedItems = []
+      for (const it of (body.items || [])) {
+        const p = await findProductAsync(it.id)
+        enrichedItems.push({
+          id: it.id,
+          qty: it.qty || 1,
+          product: p ? { id: p.id, name: p.name, price: p.price, images: p.images, brand: p.brand, category: p.category, subcategory: p.subcategory } : null,
+        })
+      }
+      const order = { id: uuidv4().slice(0,8).toUpperCase(), createdAt: Date.now(), status: 'confirmed', ...body, items: enrichedItems }
       try { const database = await getDb(); await database.collection('orders').insertOne({ ...order }) } catch {}
 
       // Fire and forget emails (customer + admin)
