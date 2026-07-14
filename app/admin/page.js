@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge'
 import { useAuthGate, getAuth } from '@/lib/auth'
 import AuthBar from '@/components/site/AuthBar'
 import ProductManager from '@/components/admin/ProductManager'
+import { AdminOrdersTable, AdminCoupons, AdminReviews, AdminReports } from '@/components/admin/AdminModules'
 
 const NAV = [
   { k:'dashboard', t:'Dashboard', i:LayoutDashboard },
@@ -145,27 +146,8 @@ function Inner() {
     )
     if (tab === 'orders') return (
       <div className="space-y-3">
-        <div className="flex items-center justify-between">
-          <h2 className="text-xl font-black">Orders</h2>
-          <Input placeholder="Search orders…" className="max-w-xs" />
-        </div>
-        <div className="rounded-2xl border overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-secondary/50 text-xs uppercase">
-              <tr><th className="p-3 text-left">Order</th><th className="p-3 text-left">Customer</th><th className="p-3 text-left">Product</th><th className="p-3 text-right">Total</th><th className="p-3">Status</th><th className="p-3">Action</th></tr>
-            </thead>
-            <tbody>{orders.map(o => (
-              <tr key={o.id} className="border-t hover:bg-secondary/30">
-                <td className="p-3 font-bold">#{o.id}</td>
-                <td className="p-3">{o.customer}<div className="text-xs text-muted-foreground">{o.email}</div></td>
-                <td className="p-3"><div className="flex items-center gap-2"><img src={o.image} className="h-8 w-8 rounded object-cover" alt="" /><span className="line-clamp-1 max-w-[240px]">{o.product}</span></div></td>
-                <td className="p-3 text-right font-bold">{formatINR(o.total)}</td>
-                <td className="p-3"><Badge className="capitalize" variant={o.status==='delivered'?'default':o.status==='cancelled'?'destructive':'secondary'}>{o.status}</Badge></td>
-                <td className="p-3"><Link href={`/track/${o.id}`}><Button size="sm" variant="outline">Track</Button></Link></td>
-              </tr>
-            ))}</tbody>
-          </table>
-        </div>
+        <div className="flex items-center justify-between"><h2 className="text-xl font-black">Orders</h2><div className="text-xs text-muted-foreground">Change status inline — customer &amp; admin get updated tracking</div></div>
+        <AdminOrdersTable token={gate.user?.token} initialOrders={orders} />
       </div>
     )
     if (tab === 'products') return (
@@ -182,33 +164,9 @@ function Inner() {
         </table></div>
       </div>
     )
-    if (tab === 'coupons') return (
-      <div>
-        <div className="flex items-center justify-between mb-3"><h2 className="text-xl font-black">Coupons</h2><Button className="rounded-full">+ New Coupon</Button></div>
-        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-3">{coupons.map(c => (
-          <div key={c.code} className="rounded-2xl border p-5 bg-gradient-to-br from-yellow-400 to-yellow-300 text-black">
-            <div className="text-xs font-bold uppercase tracking-widest">{c.discount}</div>
-            <div className="text-2xl font-black mt-1">{c.code}</div>
-            <div className="text-xs mt-2">Min order: {c.min ? formatINR(c.min) : '—'}</div>
-            <div className="text-xs">Cap: {c.cap}</div>
-            <div className="text-xs mt-3">Used {c.uses.toLocaleString()} times</div>
-          </div>
-        ))}</div>
-      </div>
-    )
-    if (tab === 'reviews') return (
-      <div>
-        <h2 className="text-xl font-black mb-3">Reviews Moderation</h2>
-        <div className="space-y-2">{reviews.map(r => (
-          <div key={r.id} className="rounded-2xl border p-4 flex flex-col md:flex-row md:items-center gap-3">
-            <img src={r.image} className="h-14 w-14 rounded object-cover" alt="" />
-            <div className="flex-1"><div className="font-bold text-sm line-clamp-1">{r.product}</div><div className="text-xs text-muted-foreground">{r.name} · {r.rating}★</div><div className="text-sm mt-1 line-clamp-2">{r.body}</div></div>
-            <Badge variant={r.status==='approved'?'default':'secondary'}>{r.status}</Badge>
-            <div className="flex gap-2"><Button size="sm" variant="outline">Approve</Button><Button size="sm" variant="destructive">Reject</Button></div>
-          </div>
-        ))}</div>
-      </div>
-    )
+    if (tab === 'coupons') return <AdminCoupons token={gate.user?.token} />
+    if (tab === 'reviews') return <AdminReviews token={gate.user?.token} initialReviews={reviews} />
+    if (tab === 'reports') return <AdminReports />
     if (tab === 'banners') return (
       <div>
         <div className="flex items-center justify-between mb-3"><h2 className="text-xl font-black">Banner Management</h2><Button className="rounded-full">+ New Banner</Button></div>
@@ -222,19 +180,7 @@ function Inner() {
         </div>
       </div>
     )
-    if (tab === 'reports') return (
-      <div>
-        <h2 className="text-xl font-black mb-3">Reports</h2>
-        <div className="grid md:grid-cols-2 gap-4">
-          {['Daily Sales Report','Inventory Snapshot','Tax Report (GST)','Customer Segmentation','Refund Log','Seller Payouts'].map((r,i) => (
-            <div key={i} className="rounded-2xl border p-5 flex items-center justify-between">
-              <div><div className="font-bold">{r}</div><div className="text-xs text-muted-foreground">Last generated: today</div></div>
-              <Button size="sm" variant="outline">Download CSV</Button>
-            </div>
-          ))}
-        </div>
-      </div>
-    )
+    if (tab === 'reports') return <AdminReports />
     if (tab === 'shipping') return <Placeholder t="Shipping & Taxes" d="Configure shipping zones, rates, and tax rules (GST slabs) per category." />
     if (tab === 'returns') return <Placeholder t="Returns & Refunds" d="Manage RMA requests, refund status and refund modes." />
     if (tab === 'inventory') return <Placeholder t="Inventory" d="Track stock levels across warehouses, low-stock alerts, and reorder suggestions." />

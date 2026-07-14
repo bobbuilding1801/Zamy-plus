@@ -3,8 +3,9 @@ import Link from 'next/link'
 import { useRouter, usePathname } from 'next/navigation'
 import { useEffect, useState, useRef } from 'react'
 import Logo from './Logo'
-import { Search, ShoppingCart, Heart, GitCompare, User, Bell, Package, Menu, Sun, Moon, ChevronDown, X } from 'lucide-react'
+import { Search, ShoppingCart, Heart, GitCompare, User, Bell, Package, Menu, Sun, Moon, ChevronDown, X, LogOut, UserCircle2 } from 'lucide-react'
 import { useShop } from '@/lib/store'
+import { useCustomer } from '@/lib/customer'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Sheet, SheetContent, SheetTrigger, SheetHeader, SheetTitle } from '@/components/ui/sheet'
@@ -16,6 +17,7 @@ export default function Header() {
   const router = useRouter()
   const pathname = usePathname()
   const { cart, wishlist, compare, notif } = useShop()
+  const { user, setModalOpen, signOut } = useCustomer()
   const cartCount = cart.filter(i => !i.savedForLater).reduce((s,i)=>s+i.qty, 0)
   const unread = notif.filter(n => n.unread).length
   const [q, setQ] = useState('')
@@ -159,9 +161,44 @@ export default function Header() {
               <Heart size={18} />
               {wishlist.length > 0 && <span className="absolute top-1.5 right-1.5 h-4 min-w-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-bold grid place-items-center">{wishlist.length}</span>}
             </Link>
-            <Link href="/account" className="h-10 w-10 grid place-items-center rounded-full hover:bg-secondary" aria-label="Account">
-              <User size={18} />
-            </Link>
+            {/* Account menu */}
+            <Popover>
+              <PopoverTrigger asChild>
+                <button className="h-10 px-2 md:px-3 grid place-items-center rounded-full hover:bg-secondary" aria-label="Account">
+                  {user ? (
+                    <div className="flex items-center gap-1.5">
+                      <div className="h-7 w-7 grid place-items-center rounded-full bg-primary text-primary-foreground font-black text-xs">{(user.email || 'Z').charAt(0).toUpperCase()}</div>
+                      <ChevronDown size={14} className="hidden md:inline text-muted-foreground" />
+                    </div>
+                  ) : (
+                    <User size={18} />
+                  )}
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-64 p-2">
+                {user ? (
+                  <>
+                    <div className="p-2 border-b mb-1">
+                      <div className="text-[11px] uppercase text-muted-foreground font-bold">Signed in</div>
+                      <div className="text-sm font-semibold truncate">{user.email}</div>
+                    </div>
+                    <Link href="/account" className="flex items-center gap-2 px-2 py-2 rounded hover:bg-secondary text-sm"><UserCircle2 size={14} /> My Account</Link>
+                    <Link href="/account?tab=orders" className="flex items-center gap-2 px-2 py-2 rounded hover:bg-secondary text-sm"><Package size={14} /> My Orders</Link>
+                    <Link href="/wishlist" className="flex items-center gap-2 px-2 py-2 rounded hover:bg-secondary text-sm"><Heart size={14} /> Wishlist</Link>
+                    <button onClick={signOut} className="w-full text-left flex items-center gap-2 px-2 py-2 rounded hover:bg-secondary text-sm text-red-500"><LogOut size={14} /> Sign out</button>
+                  </>
+                ) : (
+                  <>
+                    <div className="p-2 border-b mb-1">
+                      <div className="font-semibold text-sm">Welcome to ZAMY</div>
+                      <div className="text-xs text-muted-foreground">Sign in to unlock orders, wishlist sync, and rewards.</div>
+                    </div>
+                    <Button onClick={() => setModalOpen(true)} className="w-full rounded-full font-bold h-10 mt-1">Sign in / Sign up</Button>
+                    <Link href="/account" className="mt-2 block text-center text-xs text-muted-foreground hover:text-primary">Continue as guest &rarr;</Link>
+                  </>
+                )}
+              </PopoverContent>
+            </Popover>
             <Link href="/account?tab=orders" className="h-10 w-10 grid place-items-center rounded-full hover:bg-secondary hidden md:grid" aria-label="Orders">
               <Package size={18} />
             </Link>

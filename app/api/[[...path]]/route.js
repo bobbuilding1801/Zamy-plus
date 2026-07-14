@@ -8,6 +8,7 @@ import {
   createProduct, updateProduct, deleteProduct, decrementStock,
 } from '@/lib/products'
 import { chatCompletion } from '@/lib/llm'
+import { sendOtpEmail, sendOrderCustomerEmail, sendOrderAdminEmail, buildItemsHtml } from '@/lib/email'
 
 export const runtime = 'nodejs'
 
@@ -40,6 +41,12 @@ function requireAuth(request, role) {
   return t
 }
 
+// Admin notify emails: comma-separated list from env (defaults to admin login list)
+function adminNotifyEmails() {
+  const raw = process.env.ADMIN_NOTIFY_EMAILS || process.env.ADMIN_EMAILS || 'admin@zamy.market'
+  return raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+}
+
 let client, db
 async function getDb() {
   if (!client) {
@@ -58,18 +65,7 @@ function cors(res) {
 }
 export async function OPTIONS() { return cors(new NextResponse(null, { status: 200 })) }
 
-// Deterministic order tracking derived from order id hash
-function trackingFor(orderId) {
-  const base = Date.now() - 86400000
-  const stages = [
-    { key:'confirmed', label:'Order Confirmed', done:true, at: base - 6*3600000 },
-    { key:'packed', label:'Packed at Warehouse', done:true, at: base - 3*3600000 },
-    { key:'shipped', label:'Shipped', done:true, at: base + 6*3600000 },
-    { key:'out', label:'Out for Delivery', done:false, at: base + 20*3600000 },
-    { key:'delivered', label:'Delivered', done:false, at: base + 24*3600000 },
-  ]
-  return { orderId, courier: 'ZAMY Express', awb: 'ZMY' + orderId.slice(-6), stages }
-}
+// (order tracking is derived from real order status in the /track handler)
 
 // Compute analytics from real orders in Mongo
 async function computeAdminAnalytics(db) {
@@ -187,6 +183,76 @@ async function handler(request, { params }) {
       return cors(NextResponse.json({ ok:true, email: t.email, role: t.role }))
     }
 
+    // ---- CUSTOMER OTP AUTH ----
+    if (route === '/customer/otp/request' && method === 'POST') {
+      const { email = '' } = await request.json()
+      const em = String(email).toLowerCase().trim()
+      if (!em || !em.includes('@')) return cors(NextResponse.json({ ok:false, error: 'Enter a valid email' }, { status: 400 }))
+      const code = String(Math.floor(100000 + Math.random() * 900000))
+      const database = await getDb().catch(() => null)
+      if (database) {
+        await database.collection('otp').updateOne(
+          { email: em },
+          { $set: { email: em, code, expiresAt: Date.now() + 10*60*1000, attempts: 0 } },
+          { upsert: true },
+        )
+      }
+      await sendOtpEmail({ to: em, code }).catch(err => console.error('otp email err', err))
+      // In mock mode (no RESEND key), also return the code so the client can display it during dev.
+      const devMode = !process.env.RESEND_API_KEY
+      return cors(NextResponse.json({ ok:true, devCode: devMode ? code : undefined }))
+    }
+    if (route === '/customer/otp/verify' && method === 'POST') {
+      const { email = '', code = '' } = await request.json()
+      const em = String(email).toLowerCase().trim()
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ ok:false, error: 'DB unavailable' }, { status: 500 }))
+      const rec = await database.collection('otp').findOne({ email: em })
+      if (!rec) return cors(NextResponse.json({ ok:false, error: 'No code requested. Please request a new one.' }, { status: 400 }))
+      if (rec.expiresAt < Date.now()) return cors(NextResponse.json({ ok:false, error: 'Code expired. Request a new one.' }, { status: 400 }))
+      if ((rec.attempts || 0) >= 5) return cors(NextResponse.json({ ok:false, error: 'Too many attempts. Request a new code.' }, { status: 429 }))
+      if (String(code) !== rec.code) {
+        await database.collection('otp').updateOne({ email: em }, { $inc: { attempts: 1 } })
+        return cors(NextResponse.json({ ok:false, error: 'Incorrect code' }, { status: 400 }))
+      }
+      // Consume the OTP
+      await database.collection('otp').deleteOne({ email: em })
+      // Upsert customer profile
+      const existing = await database.collection('customers').findOne({ email: em })
+      const profile = existing || { id: uuidv4(), email: em, createdAt: Date.now() }
+      if (!existing) await database.collection('customers').insertOne(profile)
+      const token = makeToken(em, 'customer')
+      return cors(NextResponse.json({ ok:true, email: em, role: 'customer', token, profile: { id: profile.id, email: profile.email, name: profile.name, createdAt: profile.createdAt } }))
+    }
+    if (route === '/customer/me' && method === 'GET') {
+      const t = requireAuth(request, 'customer')
+      if (!t) return cors(NextResponse.json({ ok:false }, { status: 401 }))
+      const database = await getDb().catch(() => null)
+      const profile = database ? await database.collection('customers').findOne({ email: t.email }) : null
+      return cors(NextResponse.json({ ok:true, email: t.email, profile: profile ? { id: profile.id, email: profile.email, name: profile.name, createdAt: profile.createdAt } : { email: t.email } }))
+    }
+    if (route === '/customer/update' && method === 'POST') {
+      const t = requireAuth(request, 'customer')
+      if (!t) return cors(NextResponse.json({ ok:false }, { status: 401 }))
+      const body = await request.json()
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ ok:false }, { status: 500 }))
+      const patch = {}
+      if (typeof body.name === 'string') patch.name = body.name.slice(0, 60)
+      if (typeof body.mobile === 'string') patch.mobile = body.mobile.slice(0, 20)
+      await database.collection('customers').updateOne({ email: t.email }, { $set: patch })
+      return cors(NextResponse.json({ ok:true }))
+    }
+    if (route === '/customer/orders' && method === 'GET') {
+      const t = requireAuth(request, 'customer')
+      if (!t) return cors(NextResponse.json({ ok:false }, { status: 401 }))
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ items: [] }))
+      const items = await database.collection('orders').find({ 'address.email': t.email }).sort({ createdAt: -1 }).toArray().catch(() => [])
+      const clean = items.map(o => { const { _id, ...rest } = o; return rest })
+      return cors(NextResponse.json({ items: clean }))
+    }
+
     if (route === '/categories' && method === 'GET') return cors(NextResponse.json({ items: CATEGORIES }))
     if (route === '/brands' && method === 'GET') return cors(NextResponse.json({ items: BRANDS }))
 
@@ -241,21 +307,21 @@ async function handler(request, { params }) {
     if (route.startsWith('/products/') && route.endsWith('/reviews') && method === 'GET') {
       const id = route.split('/')[2]; const p = await findProductAsync(id)
       if (!p) return cors(NextResponse.json({ items: [] }))
-      const names = ['Aarav S.','Priya M.','Rahul K.','Neha J.','Karan V.','Sanya D.','Vikas P.','Ishita R.']
-      const titles = ['Excellent product!','Great value','Works as expected','Loved it','Worth every rupee','Highly recommend','Impressive quality','Solid build']
-      const bodies = [
-        'Delivery was quick and packaging was premium. Product exceeded my expectations.',
-        'Have been using for 3 weeks and no complaints. Very happy with the purchase.',
-        'Build quality is excellent. Genuine product from ZAMY.',
-        'Just what I needed. 5 stars from me!',
-        'Feels premium and performs well. Would buy again.',
-      ]
-      const items = Array.from({length:6}).map((_,i) => ({
-        id: `${id}-r${i}`, name: names[(parseInt(id)+i)%names.length], title: titles[(parseInt(id)+i)%titles.length],
-        rating: 4 + ((parseInt(id)+i)%2 === 0 ? 1 : 0), date: new Date(Date.now() - (i+1)*5*86400000).toISOString().slice(0,10),
-        body: bodies[i%bodies.length], verified: true,
-      }))
-      return cors(NextResponse.json({ items }))
+      const database = await getDb().catch(() => null)
+      const real = database ? await database.collection('reviews').find({ productId: id, status: 'approved' }).sort({ createdAt: -1 }).toArray().catch(() => []) : []
+      const realClean = real.map(({_id, ...r}) => ({ ...r, date: new Date(r.createdAt).toISOString().slice(0,10) }))
+      // Fill with seed reviews only if none real yet
+      const seed = realClean.length ? [] : (() => {
+        const names = ['Aarav S.','Priya M.','Rahul K.','Neha J.','Karan V.','Sanya D.']
+        const titles = ['Excellent product!','Great value','Loved it','Highly recommend','Impressive quality','Solid build']
+        const bodies = ['Delivery was quick and packaging was premium. Product exceeded my expectations.','Have been using for 3 weeks and no complaints. Very happy with the purchase.','Build quality is excellent. Genuine product from ZAMY.','Just what I needed. 5 stars from me!','Feels premium and performs well. Would buy again.']
+        return Array.from({length:4}).map((_,i) => ({
+          id: `${id}-r${i}`, name: names[(parseInt(id)+i)%names.length], title: titles[(parseInt(id)+i)%titles.length],
+          rating: 4 + ((parseInt(id)+i)%2 === 0 ? 1 : 0), date: new Date(Date.now() - (i+1)*5*86400000).toISOString().slice(0,10),
+          body: bodies[i%bodies.length], verified: true,
+        }))
+      })()
+      return cors(NextResponse.json({ items: [...realClean, ...seed] }))
     }
     if (route.startsWith('/products/') && route.endsWith('/qna') && method === 'GET') {
       return cors(NextResponse.json({ items: [
@@ -270,28 +336,53 @@ async function handler(request, { params }) {
       return cors(NextResponse.json(p))
     }
 
-    // Orders (with stock decrement)
+    // Orders (with stock decrement + email confirmations)
     if (route === '/orders' && method === 'POST') {
       const body = await request.json()
-      // Decrement stock atomically per item. Fail order if insufficient.
       const wantedItems = (body.items || []).map(i => ({ id: i.id, qty: i.qty || 1 }))
-      const stockCheck = []
       for (const it of wantedItems) {
         const p = await findProductAsync(it.id)
         if (!p) return cors(NextResponse.json({ ok:false, error: `Product ${it.id} not found` }, { status: 400 }))
         if ((p.stock || 0) < it.qty) return cors(NextResponse.json({ ok:false, error: `Only ${p.stock} left of "${p.name}"` }, { status: 409 }))
-        stockCheck.push(p)
       }
       const decremented = await decrementStock(wantedItems)
+      // If customer is signed in, attach email from token
+      const custAuth = requireAuth(request, 'customer')
+      if (custAuth && (!body.address || !body.address.email)) {
+        body.address = { ...(body.address || {}), email: custAuth.email }
+      }
       const order = { id: uuidv4().slice(0,8).toUpperCase(), createdAt: Date.now(), status: 'confirmed', ...body }
       try { const database = await getDb(); await database.collection('orders').insertOne({ ...order }) } catch {}
+
+      // Fire and forget emails (customer + admin)
+      const itemsHtml = buildItemsHtml(order)
+      const custEmail = order.address?.email
+      const adminList = adminNotifyEmails()
+      Promise.all([
+        custEmail ? sendOrderCustomerEmail({ to: custEmail, order, itemsHtml }).catch(e => console.error('cust email', e)) : null,
+        adminList.length ? sendOrderAdminEmail({ to: adminList, order, itemsHtml }).catch(e => console.error('admin email', e)) : null,
+      ])
+
       return cors(NextResponse.json({ ok: true, order, stock: decremented }))
     }
 
-    // Order tracking
+    // Order tracking — pulls real order status if available
     if (route.startsWith('/track/') && method === 'GET') {
       const orderId = route.split('/')[2]
-      return cors(NextResponse.json(trackingFor(orderId)))
+      const database = await getDb().catch(() => null)
+      const order = database ? await database.collection('orders').findOne({ id: orderId }) : null
+      const status = order?.status || 'confirmed'
+      const STAGE_ORDER = ['confirmed','packed','shipped','out','delivered']
+      const currentIdx = STAGE_ORDER.indexOf(status)
+      const created = order?.createdAt || Date.now() - 6*3600000
+      const stages = [
+        { key:'confirmed', label:'Order Confirmed', at: created },
+        { key:'packed',    label:'Packed at Warehouse', at: created + 3*3600000 },
+        { key:'shipped',   label:'Shipped', at: created + 12*3600000 },
+        { key:'out',       label:'Out for Delivery', at: created + 24*3600000 },
+        { key:'delivered', label:'Delivered', at: created + 36*3600000 },
+      ].map((s, i) => ({ ...s, done: i <= currentIdx }))
+      return cors(NextResponse.json({ orderId, courier: 'ZAMY Express', awb: 'ZMY' + orderId.slice(-6), stages, status }))
     }
 
     // Admin (auth required)
@@ -351,12 +442,15 @@ async function handler(request, { params }) {
       return cors(NextResponse.json({ items: Array.from(map.values()).sort((a, b) => b.spend - a.spend) }))
     }
     if (route === '/admin/coupons' && method === 'GET') {
-      return cors(NextResponse.json({ items: [
+      const database = await getDb().catch(() => null)
+      const stored = database ? await database.collection('coupons').find({}).toArray().catch(() => []) : []
+      const items = stored.length ? stored.map(({_id, ...r}) => r) : [
         { code:'WELCOME10', discount:'10%', min:0, uses:1245, cap:'₹2000' },
         { code:'ZAMY20', discount:'20%', min:1499, uses:632, cap:'₹5000' },
         { code:'FLAT500', discount:'₹500', min:2999, uses:412, cap:'–' },
         { code:'FREESHIP', discount:'Free shipping', min:0, uses:2210, cap:'–' },
-      ]}))
+      ]
+      return cors(NextResponse.json({ items }))
     }
     // Admin product management
     if (route === '/admin/products' && method === 'GET') {
@@ -382,15 +476,111 @@ async function handler(request, { params }) {
     }
 
     if (route === '/admin/reviews' && method === 'GET') {
+      const database = await getDb().catch(() => null)
       const list = await listAllProducts()
-      const items = list.slice(0,10).map((p,i) => ({
-        id: 'RV' + (100+i), productId: p.id, product: p.name, image: p.images[0],
-        name: ['Rahul','Priya','Vikas','Neha','Karan'][i%5]+' K.', rating: (i%2===0)?5:4,
-        title: ['Loved it','Great','Awesome','Solid','Perfect'][i%5],
-        body: 'Very happy with the purchase. Delivery was quick and the product is top-notch.',
-        status: i%3===0 ? 'pending' : 'approved',
-      }))
+      const dbReviews = database ? await database.collection('reviews').find({}).sort({ createdAt: -1 }).toArray().catch(() => []) : []
+      const items = dbReviews.map(r => { const { _id, ...rest } = r; return rest })
+      // If DB is empty, expose seed reviews so admin has something to see
+      if (!items.length) {
+        list.slice(0,5).forEach((p,i) => items.push({
+          id: 'RV-'+p.id, productId: p.id, product: p.name, image: p.images?.[0],
+          name: ['Rahul K.','Priya S.','Vikas P.','Neha J.','Karan D.'][i%5], rating: (i%2===0)?5:4,
+          title: ['Loved it','Great','Awesome','Solid','Perfect'][i%5],
+          body: 'Very happy with the purchase. Delivery was quick and the product is top-notch.',
+          status: 'approved', createdAt: Date.now() - i*86400000,
+        }))
+      }
       return cors(NextResponse.json({ items }))
+    }
+    if (route.startsWith('/admin/reviews/') && method === 'PUT') {
+      const id = route.split('/')[3]
+      const body = await request.json()
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ ok:false }, { status: 500 }))
+      await database.collection('reviews').updateOne({ id }, { $set: { status: body.status || 'approved' } })
+      return cors(NextResponse.json({ ok:true }))
+    }
+    if (route.startsWith('/admin/reviews/') && method === 'DELETE') {
+      const id = route.split('/')[3]
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ ok:false }, { status: 500 }))
+      await database.collection('reviews').deleteOne({ id })
+      return cors(NextResponse.json({ ok:true }))
+    }
+
+    // Admin: coupons CRUD
+    if (route === '/admin/coupons' && method === 'POST') {
+      const body = await request.json()
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ ok:false }, { status: 500 }))
+      const code = String(body.code || '').toUpperCase().trim()
+      if (!code) return cors(NextResponse.json({ ok:false, error:'Code required' }, { status: 400 }))
+      const doc = { code, discount: body.discount || '10%', min: Number(body.min || 0), cap: body.cap || '—', uses: 0, createdAt: Date.now() }
+      await database.collection('coupons').updateOne({ code }, { $set: doc }, { upsert: true })
+      return cors(NextResponse.json({ ok:true, coupon: doc }))
+    }
+    if (route.startsWith('/admin/coupons/') && method === 'DELETE') {
+      const code = decodeURIComponent(route.split('/')[3])
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ ok:false }, { status: 500 }))
+      await database.collection('coupons').deleteOne({ code })
+      return cors(NextResponse.json({ ok:true }))
+    }
+
+    // Admin: order status update
+    if (route.startsWith('/admin/orders/') && method === 'PUT') {
+      const id = route.split('/')[3]
+      const body = await request.json()
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ ok:false }, { status: 500 }))
+      const status = String(body.status || 'confirmed')
+      const allowed = ['confirmed','packed','shipped','out','delivered','cancelled']
+      if (!allowed.includes(status)) return cors(NextResponse.json({ ok:false, error:'Invalid status' }, { status: 400 }))
+      await database.collection('orders').updateOne({ id }, { $set: { status } })
+      return cors(NextResponse.json({ ok:true }))
+    }
+
+    // Admin: banners CMS
+    if (route === '/admin/banners' && method === 'GET') {
+      const database = await getDb().catch(() => null)
+      const doc = database ? await database.collection('cms').findOne({ key: 'hero' }) : null
+      return cors(NextResponse.json({ items: doc?.slides || HERO_SLIDES }))
+    }
+    if (route === '/admin/banners' && method === 'POST') {
+      const body = await request.json()
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ ok:false }, { status: 500 }))
+      await database.collection('cms').updateOne({ key: 'hero' }, { $set: { key: 'hero', slides: body.slides || [], updatedAt: Date.now() } }, { upsert: true })
+      return cors(NextResponse.json({ ok:true }))
+    }
+
+    // Admin: reports CSV
+    if (route.startsWith('/admin/reports/') && method === 'GET') {
+      const kind = route.split('/')[3]
+      const database = await getDb().catch(() => null)
+      let rows = []
+      if (kind === 'orders' && database) {
+        const items = await database.collection('orders').find({}).sort({ createdAt: -1 }).toArray().catch(() => [])
+        rows.push(['id','date','customer','email','total','status','payment'])
+        for (const o of items) rows.push([o.id, new Date(o.createdAt).toISOString(), o.address?.name || '', o.address?.email || '', o.total || 0, o.status, o.payment || ''])
+      } else if (kind === 'products') {
+        const items = await listAllProducts()
+        rows.push(['id','name','brand','category','subcategory','price','mrp','stock','rating'])
+        for (const p of items) rows.push([p.id, p.name, p.brand, p.category, p.subcategory, p.price, p.mrp, p.stock, p.rating])
+      } else if (kind === 'customers' && database) {
+        const items = await database.collection('orders').find({}).toArray().catch(() => [])
+        const map = new Map()
+        for (const o of items) { const em = o.address?.email; if (!em) continue; const prev = map.get(em) || { email: em, name: o.address?.name, orders: 0, spend: 0 }; prev.orders++; prev.spend += o.total || 0; map.set(em, prev) }
+        rows.push(['email','name','orders','lifetime_spend'])
+        for (const c of map.values()) rows.push([c.email, c.name, c.orders, c.spend])
+      } else {
+        rows = [['message'], ['Report type not available yet']]
+      }
+      const csv = rows.map(r => r.map(v => { const s = String(v ?? ''); return s.includes(',')||s.includes('"') ? '"'+s.replace(/"/g,'""')+'"' : s }).join(',')).join('\n')
+      const res = new NextResponse(csv, { status: 200 })
+      res.headers.set('Content-Type', 'text/csv; charset=utf-8')
+      res.headers.set('Content-Disposition', `attachment; filename=zamy-${kind}-${Date.now()}.csv`)
+      return cors(res)
     }
 
     // Seller
@@ -461,6 +651,71 @@ async function handler(request, { params }) {
       } catch {}
       const items = (recIds.length ? recIds : candidates.slice(0,6).map(p=>p.id)).map(id => byId.get(id)).filter(Boolean).slice(0,6)
       return cors(NextResponse.json({ items, reason: reason || 'Curated for your interests.' }))
+    }
+
+    // Public: banners (homepage hero)
+    if (route === '/banners' && method === 'GET') {
+      const database = await getDb().catch(() => null)
+      const doc = database ? await database.collection('cms').findOne({ key: 'hero' }) : null
+      const res = NextResponse.json({ items: doc?.slides || HERO_SLIDES })
+      res.headers.set('Cache-Control', 'public, s-maxage=30, stale-while-revalidate=60')
+      return cors(res)
+    }
+
+    // Public: customer submits a review (requires customer auth)
+    if (route.startsWith('/products/') && route.endsWith('/reviews') && method === 'POST') {
+      const t = requireAuth(request, 'customer')
+      if (!t) return cors(NextResponse.json({ ok:false, error: 'Please sign in to post a review' }, { status: 401 }))
+      const productId = route.split('/')[2]
+      const p = await findProductAsync(productId)
+      if (!p) return cors(NextResponse.json({ ok:false, error: 'Product not found' }, { status: 404 }))
+      const body = await request.json()
+      const rating = Math.max(1, Math.min(5, Number(body.rating || 0)))
+      if (!rating) return cors(NextResponse.json({ ok:false, error: 'Rating required' }, { status: 400 }))
+      const database = await getDb().catch(() => null)
+      if (!database) return cors(NextResponse.json({ ok:false }, { status: 500 }))
+      const doc = {
+        id: uuidv4().slice(0,10).toUpperCase(),
+        productId, product: p.name, image: p.images?.[0],
+        email: t.email, name: (body.name || t.email.split('@')[0]),
+        rating,
+        title: String(body.title || '').slice(0, 100),
+        body: String(body.body || '').slice(0, 1000),
+        status: 'approved',
+        verified: true,
+        createdAt: Date.now(),
+      }
+      await database.collection('reviews').insertOne({ ...doc })
+      return cors(NextResponse.json({ ok:true, review: doc }))
+    }
+
+    // Payments scaffold (Razorpay/Stripe placeholders — real once keys are set)
+    if (route === '/payments/create' && method === 'POST') {
+      const body = await request.json()
+      const amount = Math.round(Number(body.amount || 0))
+      const currency = body.currency || 'INR'
+      const method = body.method || 'razorpay'
+      // If real keys present, integrate here.
+      if (method === 'razorpay' && process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
+        try {
+          const auth = Buffer.from(`${process.env.RAZORPAY_KEY_ID}:${process.env.RAZORPAY_KEY_SECRET}`).toString('base64')
+          const r = await fetch('https://api.razorpay.com/v1/orders', { method:'POST', headers:{ 'Content-Type':'application/json', Authorization:`Basic ${auth}` }, body: JSON.stringify({ amount: amount*100, currency, receipt: 'zamy_'+Date.now() })})
+          const d = await r.json()
+          if (r.ok) return cors(NextResponse.json({ ok:true, provider:'razorpay', keyId: process.env.RAZORPAY_KEY_ID, order: d, mocked: false }))
+          return cors(NextResponse.json({ ok:false, error: d?.error?.description || 'Razorpay error' }, { status: 502 }))
+        } catch (e) { return cors(NextResponse.json({ ok:false, error: String(e.message||e) }, { status: 500 })) }
+      }
+      // Mock success (dev / no keys yet)
+      return cors(NextResponse.json({ ok:true, provider: method, order:{ id:'MOCK_'+uuidv4().slice(0,10), amount:amount*100, currency, status:'created' }, mocked: true }))
+    }
+    if (route === '/payments/verify' && method === 'POST') {
+      const body = await request.json()
+      if (process.env.RAZORPAY_KEY_SECRET && body.razorpay_order_id) {
+        const sig = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET).update(`${body.razorpay_order_id}|${body.razorpay_payment_id}`).digest('hex')
+        return cors(NextResponse.json({ ok: sig === body.razorpay_signature, mocked: false }))
+      }
+      // Mock verify — always succeeds in dev
+      return cors(NextResponse.json({ ok:true, mocked: true }))
     }
 
     // Newsletter / contact

@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { useShop, formatINR } from '@/lib/store'
+import { useCustomer } from '@/lib/customer'
 import { toast } from 'sonner'
 import { Heart, GitCompare, Share2, ShoppingCart, Zap, Truck, ShieldCheck, RotateCcw, Package, MapPin, Check } from 'lucide-react'
 import Link from 'next/link'
@@ -25,6 +26,10 @@ function ProductInner() {
   const [zoom, setZoom] = useState({ show:false, x:0, y:0 })
   const [pin, setPin] = useState('560001')
   const { addToCart, toggleWishlist, wishlist, toggleCompare, compare, pushRecent } = useShop()
+  const { user, setModalOpen } = useCustomer()
+  const [showReviewForm, setShowReviewForm] = useState(false)
+  const [reviewForm, setReviewForm] = useState({ rating: 5, title: '', body: '' })
+  const [postingReview, setPostingReview] = useState(false)
 
   useEffect(() => {
     if (!id) return
@@ -178,7 +183,32 @@ function ProductInner() {
               <div className="text-5xl font-black">{p.rating.toFixed(1)}</div>
               <StarRating value={p.rating} size={18} />
               <div className="text-sm text-muted-foreground mt-1">Based on {p.ratingCount.toLocaleString()} ratings</div>
-              <Button className="mt-4 rounded-full">Write a Review</Button>
+              <Button className="mt-4 rounded-full" onClick={() => { if (!user) { setModalOpen(true); return } setShowReviewForm(v => !v) }}>{showReviewForm ? 'Cancel' : 'Write a Review'}</Button>
+              {showReviewForm && (
+                <div className="mt-4 rounded-xl border p-3 space-y-2">
+                  <div className="flex items-center gap-1">
+                    {[1,2,3,4,5].map(n => (
+                      <button key={n} onClick={() => setReviewForm({...reviewForm, rating:n})} className="p-0.5">
+                        <span className={n <= reviewForm.rating ? 'text-yellow-400 text-2xl' : 'text-neutral-300 text-2xl'}>★</span>
+                      </button>
+                    ))}
+                  </div>
+                  <input value={reviewForm.title} onChange={e => setReviewForm({...reviewForm, title:e.target.value})} placeholder="Title (optional)" className="w-full h-9 px-3 rounded-lg border bg-background text-sm" />
+                  <textarea value={reviewForm.body} onChange={e => setReviewForm({...reviewForm, body:e.target.value})} placeholder="Share your experience with this product…" rows={3} className="w-full px-3 py-2 rounded-lg border bg-background text-sm resize-none" />
+                  <Button size="sm" disabled={postingReview} onClick={async () => {
+                    setPostingReview(true)
+                    try {
+                      const r = await fetch(`/api/products/${p.id}/reviews`, { method:'POST', headers:{'Content-Type':'application/json', Authorization:`Bearer ${user.token}`}, body: JSON.stringify({ rating: reviewForm.rating, title: reviewForm.title, body: reviewForm.body, name: user.email.split('@')[0] })})
+                      const d = await r.json()
+                      if (!d.ok) throw new Error(d.error || 'Failed')
+                      toast.success('Review posted, thank you!')
+                      setShowReviewForm(false); setReviewForm({ rating:5, title:'', body:'' })
+                      fetch(`/api/products/${p.id}/reviews`).then(r=>r.json()).then(d => setReviews(d.items||[]))
+                    } catch (e) { toast.error(String(e.message||e)) }
+                    finally { setPostingReview(false) }
+                  }} className="rounded-full">{postingReview ? 'Posting…' : 'Post Review'}</Button>
+                </div>
+              )}
             </div>
             <div className="md:col-span-2 space-y-4">
               {reviews.map(r => (

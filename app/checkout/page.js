@@ -2,12 +2,12 @@
 import SiteChrome from '@/components/site/SiteChrome'
 import { useEffect, useState } from 'react'
 import { useShop, formatINR } from '@/lib/store'
+import { useCustomer } from '@/lib/customer'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
-import { Label } from '@/components/ui/label'
 import { Card } from '@/components/ui/card'
-import { Check, MapPin, Truck, CreditCard, ShieldCheck, ArrowRight, ArrowLeft } from 'lucide-react'
+import { Check, MapPin, Truck, CreditCard, ShieldCheck, ArrowRight, ArrowLeft, LogIn } from 'lucide-react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { toast } from 'sonner'
@@ -19,9 +19,7 @@ function Stepper({ step }) {
     <div className="flex items-center justify-center gap-2 md:gap-4 mb-8">
       {STEPS.map((s, i) => (
         <div key={s} className="flex items-center gap-2">
-          <div className={`h-8 w-8 grid place-items-center rounded-full text-xs font-bold ${i<=step ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground'}`}>
-            {i<step ? <Check size={14} /> : i+1}
-          </div>
+          <div className={`h-8 w-8 grid place-items-center rounded-full text-xs font-bold ${i<=step ? 'bg-primary text-primary-foreground' : 'bg-secondary text-muted-foreground'}`}>{i<step ? <Check size={14} /> : i+1}</div>
           <div className={`text-sm font-semibold ${i<=step ? '' : 'text-muted-foreground'} hidden sm:block`}>{s}</div>
           {i < STEPS.length-1 && <div className={`h-0.5 w-6 md:w-10 ${i<step ? 'bg-primary' : 'bg-border'}`} />}
         </div>
@@ -33,13 +31,18 @@ function Stepper({ step }) {
 function CheckoutInner() {
   const router = useRouter()
   const { cart, clearCart, placeOrder } = useShop()
+  const { user, setModalOpen } = useCustomer()
   const [products, setProducts] = useState({})
   const [step, setStep] = useState(0)
-  const [guest, setGuest] = useState(true)
   const [addr, setAddr] = useState({ name:'', mobile:'', email:'', line1:'', city:'', state:'', pin:'', country:'India' })
   const [billing, setBilling] = useState({ same: true })
   const [ship, setShip] = useState('standard')
   const [pay, setPay] = useState('upi')
+  const [placing, setPlacing] = useState(false)
+
+  useEffect(() => {
+    if (user?.email && !addr.email) setAddr(a => ({ ...a, email: user.email }))
+  }, [user])
 
   useEffect(() => {
     const ids = cart.filter(c => !c.savedForLater).map(c => c.id).join(',')
@@ -62,17 +65,26 @@ function CheckoutInner() {
   }
 
   const submit = async () => {
-    const order = { total, items: active.map(c => ({ ...c, product: products[c.id] })), address: addr, shipping: ship, payment: pay, id: '' }
-    const res = await fetch('/api/orders', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(order) })
-    const data = await res.json()
-    if (!res.ok || !data.ok) {
-      toast.error(data.error || 'Could not place order. Please try again.')
-      return
-    }
-    placeOrder({ ...order, id: data.order.id, total })
-    clearCart()
-    toast.success('Order placed successfully!')
-    router.push(`/order-success?id=${data.order.id}`)
+    setPlacing(true)
+    try {
+      const order = { total, items: active.map(c => ({ ...c, product: products[c.id] })), address: addr, shipping: ship, payment: pay, id: '' }
+      // Payments: real Razorpay if key present, else mock
+      const payRes = await fetch('/api/payments/create', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ amount: total, currency: 'INR', method: pay === 'card' ? 'razorpay' : pay })})
+      const payData = await payRes.json()
+      if (!payData.ok) throw new Error(payData.error || 'Payment init failed')
+      if (!payData.mocked && payData.provider === 'razorpay') {
+        // Real Razorpay checkout would open here. For now we short-circuit to server verify with mocked signatures until keys are added.
+      }
+      const headers = { 'Content-Type':'application/json', ...(user ? { Authorization: `Bearer ${user.token}` } : {}) }
+      const res = await fetch('/api/orders', { method:'POST', headers, body: JSON.stringify(order) })
+      const data = await res.json()
+      if (!res.ok || !data.ok) throw new Error(data.error || 'Could not place order')
+      placeOrder({ ...order, id: data.order.id, total })
+      clearCart()
+      toast.success('Order placed! Confirmation email on the way.')
+      router.push(`/order-success?id=${data.order.id}`)
+    } catch (e) { toast.error(String(e.message || e)) }
+    finally { setPlacing(false) }
   }
 
   if (active.length === 0) return <div className="container py-16 text-center">Your cart is empty. <Link className="text-primary underline" href="/shop">Shop now</Link></div>
@@ -87,18 +99,9 @@ function CheckoutInner() {
               <>
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-lg font-bold flex items-center gap-2"><MapPin size={18} /> Shipping Address</h2>
-                  <div className="text-sm">
-                    <button onClick={() => setGuest(true)} className={`px-3 py-1 rounded-full text-xs font-semibold ${guest?'bg-primary text-primary-foreground':'bg-secondary'}`}>Guest</button>
-                    <button onClick={() => setGuest(false)} className={`ml-2 px-3 py-1 rounded-full text-xs font-semibold ${!guest?'bg-primary text-primary-foreground':'bg-secondary'}`}>Sign in</button>
-                  </div>
+                  {!user && <Button size="sm" variant="outline" className="rounded-full" onClick={() => setModalOpen(true)}><LogIn size={14} className="mr-1" /> Sign in for faster checkout</Button>}
                 </div>
-                {!guest && (
-                  <div className="grid grid-cols-2 gap-3 mb-4 p-3 rounded-lg bg-secondary/50">
-                    <Input placeholder="Email" />
-                    <Input placeholder="Password" type="password" />
-                    <Button className="col-span-2">Sign in</Button>
-                  </div>
-                )}
+                {user && <div className="mb-3 rounded-lg bg-primary/10 border border-primary/30 p-2 text-xs">Signed in as <b>{user.email}</b>. Your order will be linked to your account and confirmations sent to this email.</div>}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <Input placeholder="Full name*" value={addr.name} onChange={e => setAddr({...addr, name:e.target.value})} />
                   <Input placeholder="Mobile*" value={addr.mobile} onChange={e => setAddr({...addr, mobile:e.target.value})} />
@@ -144,20 +147,14 @@ function CheckoutInner() {
                 <RadioGroup value={pay} onValueChange={setPay} className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {[
                     { v:'upi', t:'UPI', d:'Google Pay, PhonePe, Paytm' },
-                    { v:'card', t:'Credit / Debit Card', d:'Visa, MC, RuPay, Amex' },
+                    { v:'card', t:'Credit / Debit Card', d:'Visa, MC, RuPay, Amex · via Razorpay' },
                     { v:'netbanking', t:'Net Banking', d:'All major banks' },
                     { v:'wallet', t:'Wallets', d:'Paytm, Mobikwik, Amazon Pay' },
-                    { v:'razorpay', t:'Razorpay', d:'Multi-method' },
-                    { v:'stripe', t:'Stripe', d:'International cards' },
-                    { v:'paypal', t:'PayPal', d:'Balance / linked account' },
                     { v:'cod', t:'Cash on Delivery', d:'Pay when you receive' },
                   ].map(o => (
                     <label key={o.v} className={`flex items-center gap-3 p-4 rounded-xl border cursor-pointer ${pay===o.v?'border-primary bg-primary/5':''}`}>
                       <RadioGroupItem value={o.v} id={o.v} />
-                      <div>
-                        <div className="font-semibold">{o.t}</div>
-                        <div className="text-xs text-muted-foreground">{o.d}</div>
-                      </div>
+                      <div><div className="font-semibold">{o.t}</div><div className="text-xs text-muted-foreground">{o.d}</div></div>
                     </label>
                   ))}
                 </RadioGroup>
@@ -181,6 +178,7 @@ function CheckoutInner() {
                   <div><b>Ship to:</b> {addr.name}, {addr.line1}, {addr.city} {addr.pin}</div>
                   <div className="mt-1"><b>Delivery:</b> {ship}</div>
                   <div className="mt-1"><b>Payment:</b> {pay.toUpperCase()}</div>
+                  <div className="mt-1"><b>Confirmation to:</b> {addr.email || '(no email provided)'}</div>
                 </div>
               </>
             )}
@@ -189,7 +187,7 @@ function CheckoutInner() {
               {step < 3 ? (
                 <Button onClick={() => canNext() ? setStep(s => s+1) : toast.error('Please fill required fields')} className="rounded-full px-8 font-bold">Continue <ArrowRight size={16} className="ml-1" /></Button>
               ) : (
-                <Button onClick={submit} className="rounded-full px-8 font-bold">Place Order</Button>
+                <Button onClick={submit} disabled={placing} className="rounded-full px-8 font-bold">{placing ? 'Placing…' : 'Place Order'}</Button>
               )}
             </div>
           </Card>
